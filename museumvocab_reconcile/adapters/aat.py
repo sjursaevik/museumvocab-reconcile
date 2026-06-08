@@ -41,11 +41,31 @@ from .base import AuthorityAdapter
 
 RECONCILE_URL = "https://services.getty.edu/vocab/reconcile/"
 CONCEPT_URL = "https://vocab.getty.edu/aat/{id}.json"
-MAX_ANCESTOR_DEPTH = 12
+# Cap on ancestors visited while climbing to the facet. The climb follows the
+# *preferred* parent, so it walks a single lineage; 40 is generous (deepest AAT
+# object lineages are ~15 levels) and the node cache makes repeat ancestors free.
+MAX_ANCESTOR_DEPTH = 40
 
-# AAT root/guide-term IDs -> facet label used in profiles. Extend as needed;
-# verified IDs from the technique pilot are marked.
+# Root of the AAT. By Getty's editorial rules the *facets* sit directly below it
+# (https://www.getty.edu/.../3.1/), so the node whose parent is this id IS the
+# concept's AAT facet — a reliable signal that does NOT depend on FACET_ROOTS
+# being complete. Used to find the facet node for the human-readable `aat_facet`.
+AAT_TOP_ID = "300000000"
+
+# AAT id -> internal facet label used in profiles.
+#
+# What actually matters here are the FACET ROOT ids (the nodes directly under the
+# AAT root). `_resolve_hierarchy` climbs the preferred-parent chain to the facet
+# and lets the hit CLOSEST TO THE TOP win, so a correct facet root overrides any
+# lower, possibly-mislabelled guide term on the same chain. Listing all ~7 facet
+# roots makes `facet` resolve for (almost) every term; guide-term ids below are
+# only a nearer fallback for chains that don't reach a root within the cap.
+# Confirm every id with `python tools/verify_facets.py` (it can reach Getty; the
+# sandbox cannot). The reviewer also sees the live `aat_facet` label per term, so
+# a missing/wrong mapping here is now visible rather than silent.
 FACET_ROOTS: dict[str, str] = {
+    "300264092": "work_types",      # Objects Facet (ROOT) — VERIFIED. Do not remove:
+                                    # without it, deep object lineages resolve to no facet.
     "300053001": "techniques",      # Processes and Techniques (Activities Facet) [pilot]
     "300054216": "techniques",      # painting techniques [pilot]
     "300053319": "techniques",      # printing/printmaking [pilot]
@@ -149,7 +169,7 @@ class AatAdapter(AuthorityAdapter):
 
     def fetch(self, concept_id: str) -> dict[str, Any]:
         node = self._node(concept_id)
-        ancestors = self._walk_broader(node["broader"], concept_id)
+        ancestors, facet, aat_facet = self._resolve_hierarchy(concept_id, node["broader"])
         return {
             "id": concept_id,
             "uri": f"http://vocab.getty.edu/aat/{concept_id}",
@@ -159,7 +179,8 @@ class AatAdapter(AuthorityAdapter):
             "scope_note": node["scope_note"],
             "ancestors": ancestors,
             "cross_refs": node["cross_refs"],
-            "facet": self._facet(ancestors, concept_id),
+            "facet": facet,            # internal facet label, or None
+            "aat_facet": aat_facet,    # live Getty facet "<label> (<id>)", for review
         }
 
     # ---- internals --------------------------------------------------------
@@ -208,33 +229,60 @@ class AatAdapter(AuthorityAdapter):
         )
         return resp.json()
 
-    def _walk_broader(self, broader_ids: list[str], start_id: str) -> list[dict[str, Any]]:
-        """Walk the broader chain upward, using cached compact nodes,
-        depth-capped and cycle-safe."""
-        chain: list[dict[str, Any]] = []
-        visited = {start_id}
-        frontier = list(broader_ids)
-        depth = 0
-        while frontier and depth < MAX_ANCESTOR_DEPTH:
-            cid = frontier.pop(0)
-            if cid in visited:
+    def _resolve_hierarchy(
+        self, concept_id: str, broader_ids: list[str]
+    ) -> tuple[list[dict[str, Any]], str | None, str | None]:
+        """Climb the *preferred*-parent chain to the AAT facet and resolve:
+
+          ancestors  - [{"id","label"}] in climb order (concept's parents, up).
+          facet      - internal facet label: the FACET_ROOTS hit CLOSEST TO THE
+                       TOP of the chain, so a real facet root overrides a lower,
+                       possibly-mislabelled guide term. None if no id matched.
+          aat_facet  - the live Getty facet as "<label> (<id>)". The facet is the
+                       node sitting directly under the AAT root (AAT_TOP_ID), per
+                       Getty's editorial rules, so this is reliable even when that
+                       facet's id is absent from FACET_ROOTS — the reviewer always
+                       sees the real AAT facet, and a missing mapping is visible.
+
+        Following the preferred (first) parent walks one lineage to the facet
+        rather than fanning out across the polyhierarchy, so it reaches the top
+        in ~depth fetches (cached, cycle-safe, capped at MAX_ANCESTOR_DEPTH).
+        """
+        ancestors: list[dict[str, Any]] = []
+        visited = {concept_id, AAT_TOP_ID}
+        facet: str | None = FACET_ROOTS.get(concept_id)
+        facet_node: dict[str, Any] | None = None
+        parents = list(broader_ids)
+        steps = 0
+        while parents and steps < MAX_ANCESTOR_DEPTH:
+            cid = parents[0]
+            if cid in visited:                      # cycle / already seen
+                parents = parents[1:]               # try the next alternative parent
                 continue
             visited.add(cid)
+            steps += 1
             try:
                 n = self._node(cid)
             except requests.RequestException:
-                chain.append({"id": cid, "label": None})
-                continue
-            chain.append({"id": cid, "label": n.get("label")})
-            frontier.extend(n["broader"])
-            depth += 1
-        return chain
+                ancestors.append({"id": cid, "label": None})
+                break                               # can't climb further; stop cleanly
+            label = n.get("label")
+            ancestors.append({"id": cid, "label": label})
+            if cid in FACET_ROOTS:                   # topmost hit wins (we overwrite climbing up)
+                facet = FACET_ROOTS[cid]
+            nb = list(n.get("broader", []))
+            if AAT_TOP_ID in nb or not nb:           # a node under the root is a Facet
+                facet_node = {"id": cid, "label": label}
+                break
+            parents = nb                             # climb to this node's preferred parent
 
-    def _facet(self, ancestors: list[dict[str, Any]], concept_id: str) -> str | None:
-        for a in [{"id": concept_id}] + ancestors:
-            if a["id"] in FACET_ROOTS:
-                return FACET_ROOTS[a["id"]]
-        return None
+        aat_facet = None
+        if facet_node:
+            aat_facet = (
+                f"{facet_node['label']} ({facet_node['id']})"
+                if facet_node["label"] else facet_node["id"]
+            )
+        return ancestors, facet, aat_facet
 
 
 # ---- format detection + parsers -------------------------------------------

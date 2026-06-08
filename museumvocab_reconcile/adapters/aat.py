@@ -50,12 +50,16 @@ FACET_ROOTS: dict[str, str] = {
     "300054216": "techniques",      # painting techniques [pilot]
     "300053319": "techniques",      # printing/printmaking [pilot]
     "300054196": "techniques",      # textile-making [pilot]
-    "300053238": "techniques",      # photographic techniques [pilot]
-    "300054686": "techniques",      # physical activities [pilot]
-    "300264092": "materials",       # Materials (Materials Facet)
-    "300264550": "work_types",      # Object Genres (Objects Facet)
-    "300241490": "formats",         # attributes and properties (Physical Attributes)
-    "300015646": "design_motifs",   # design elements (Physical Attributes)
+    "300134334": "techniques",      # photographic techniques [pilot]
+    "300054686": "techniques",      # publishing
+    "300185711": "work_types",      # Object Genres (Objects Facet)
+    "300241490": "materials",       # components
+    "300015646": "styles_periods",   # styles and periods. 
+    "300264091": "materials", #materials facet 
+    "300264087": "physical_attributes", #physical_attributes
+    "300264086": "subjects", #Associated Concepts Facet sjekk denne etter testing evt
+    "300009700": "subjects", #design elements
+    "300266038": "formats", #formats
 }
 
 # Linked.Art only: AAT language-concept URI -> BCP-47 code. English is well

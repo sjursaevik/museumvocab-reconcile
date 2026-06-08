@@ -21,6 +21,7 @@ COLUMNS = [
     "id", "tier",                       # context (machine output)
     "source_term", "parents", "english_term", "english_source",  # context
     "proposed_id", "proposed_uri", "proposed_facet", "proposed_aat_facet", "proposed_target_term",
+    "matched_term", "matched_lang",    # the AAT label that matched the query (+ its language)
     "best_score", "reasons",            # context
     # ---- editable by the reviewer ----
     "accept", "chosen_id", "chosen_target_term", "chosen_facet", "notes",
@@ -60,6 +61,8 @@ def export_review_csv(
                     "proposed_facet": ct.proposed_facet or "",
                     "proposed_aat_facet": ct.proposed_aat_facet or "",
                     "proposed_target_term": ct.proposed_target_term or "",
+                    "matched_term": best.matched_label if best else "",
+                    "matched_lang": best.matched_lang if best else "",
                     "best_score": f"{best.score:.1f}" if best else "",
                     "reasons": " | ".join(ct.reasons)
                     + (f" || alts: {_runner_up_note(ct)}" if ct.candidates else ""),

@@ -201,6 +201,14 @@ class AatAdapter(AuthorityAdapter):
         if fmt == "linked_art":
             pref, alt, scope, broader = _parse_linked_art(node)
             label = node.get("_label") or pref.get("en")
+            # Getty's top-level `_label` is the English preferred descriptor. Some
+            # records tag the English preferred Name with no language (it lands
+            # under "und") or omit the preferred-term classification, leaving
+            # pref["en"] empty — which made review/output fall back to the
+            # SOURCE's English term instead of the AAT term. Backfill from _label
+            # so the AAT preferred English label is always what surfaces.
+            if label and not pref.get("en"):
+                pref["en"] = label
         else:
             pref, alt, scope, broader = _parse_gvp(node, doc)
             label = pref.get("en")

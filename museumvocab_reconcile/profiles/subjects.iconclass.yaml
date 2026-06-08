@@ -1,0 +1,50 @@
+# Profile: subject classification vocabulary -> Iconclass
+# Iconclass has no Norwegian labels, so the language pivot is English:
+# translate the source term first, then match on English.
+profile: subjects
+authority: iconclass
+
+languages:
+  source: nb
+  target: en
+  query_order_by_depth:
+    leaf: [en]                 # query in English only (Iconclass has no nb/nn)
+    root: [en]
+  trusted_exact_match_langs: [en]   # exact match trusted only in English
+
+facets:
+  preferred: null
+  accept_all: true             # Iconclass "divisions" are not AAT-style facets; accept all
+  accepted: []
+  linked_art_property:
+    # Subjects typically attach to the object as "about"/"represents".
+    abstract_ideas_concepts: {target: object, prop: about}
+    bible:                   {target: object, prop: about}
+    classical_mythology:     {target: object, prop: about}
+
+thresholds:
+  auto_accept:
+    mode: exact_only           # subjects are easy to mis-map; only auto-accept exact hits
+    min_score: 30
+    min_score_gap: 8
+    trusted_lang_exact_match: true
+  review_if:
+    cross_facet_ambiguity: false
+    broader_only: true
+
+source_schema:
+  id_field: ID
+  status_field: Status
+  include_status: [Gyldig]
+  logical_name_field: logicalName
+  label_field: label
+  level_pattern: "Level_{n}_{lang}"
+  dedupe_by: ID
+
+lookup:
+  result_limit: 5          # candidates requested per reconciliation query
+  enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
+  min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
+
+review:
+  include_auto_accepted: true   # also write auto-accepted terms into 03b_review.csv

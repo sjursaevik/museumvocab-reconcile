@@ -1,0 +1,22 @@
+[project]
+name = "museumvocab-reconcile"
+version = "0.1.0"
+description = "Reconcile MuseumPlus museum vocabularies against authority sources (AAT, Iconclass, ...) for Linked Art."
+requires-python = ">=3.10"
+dependencies = ["requests>=2.28", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.40"]
+
+[project.scripts]
+museumvocab-reconcile = "museumvocab_reconcile.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["museumvocab_reconcile", "museumvocab_reconcile.adapters"]
+
+[tool.setuptools.package-data]
+museumvocab_reconcile = ["profiles/*.yaml"]

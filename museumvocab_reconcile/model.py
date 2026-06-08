@@ -1,0 +1,79 @@
+"""Internal data model shared across all pipeline stages.
+
+These dataclasses are authority-agnostic. Adapters normalise their service's
+responses into ``Candidate`` objects (including the enriched fields populated by
+``enrich_candidates``); everything downstream (tiering, review, assembly) only
+ever sees these shapes.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class SourceTerm:
+    """One row of the source vocabulary, after prep/normalisation."""
+
+    id: str
+    status: str
+    logical_name: str | None
+    label: str | None
+    main_lang_term: str          # main term in the source language (e.g. nb)
+    main_target_term: str        # main term in the target language (e.g. en); "" if absent
+    main_level: int              # index of the highest non-empty level
+    parents_source: list[str]    # parent terms (broader), source language, broad->narrow
+    parents_target: list[str]    # parent terms, target language
+    raw: dict[str, Any] = field(default_factory=dict)  # original row, for traceability
+    target_source: str = "source_data"  # provenance of main_target_term: source_data | llm | human
+
+    @property
+    def is_leaf(self) -> bool:
+        # Heuristic used by the query-strategy weighting: a term with parents is
+        # treated as a leaf, a depth-0 term as a root/umbrella concept.
+        return self.main_level > 0
+
+
+@dataclass
+class Candidate:
+    """A single ranked authority candidate, normalised across adapters."""
+
+    authority: str               # "aat" | "iconclass" | ...
+    concept_id: str
+    uri: str
+    score: float
+    matched_label: str           # the authority label the query matched
+    matched_lang: str            # language of matched_label
+    query_lang: str              # language the query was issued in
+    is_exact: bool               # normalised exact match between query and matched_label
+    facet: str | None            # authority-internal category (AAT facet / Iconclass division)
+    pref_label_target: str | None = None   # preferred label in the target language
+    scope_note: str | None = None
+    ancestors: list[dict[str, Any]] = field(default_factory=list)   # [{"id":..., "label":...}]
+    cross_refs: list[dict[str, Any]] = field(default_factory=list)  # related concepts in other facets
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ClassifiedTerm:
+    """A source term plus its candidates and the tiering decision."""
+
+    term: SourceTerm
+    candidates: list[Candidate]
+    best: Candidate | None
+    tier: str                    # "auto_accept" | "review" | "no_match"
+    reasons: list[str]           # human-readable explanation of the tier decision
+    proposed_facet: str | None
+    proposed_target_term: str | None = None  # proposed English/target label
+
+
+@dataclass
+class Decision:
+    """A human override read back from the review CSV (one per source ID)."""
+
+    id: str
+    accept: bool
+    chosen_id: str | None
+    chosen_target_term: str | None
+    chosen_facet: str | None
+    notes: str = ""

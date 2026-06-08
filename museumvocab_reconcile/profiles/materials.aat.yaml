@@ -1,0 +1,65 @@
+# Profile: art technique/medium vocabulary -> Getty AAT
+# This reproduces the settings the technique pilot converged on.
+profile: techniques
+authority: aat
+
+languages:
+  source: nb
+  target: en
+  query_order_by_depth:        # Norwegian-first for leaves, English-first for roots
+    leaf: [nb, en]
+    root: [en, nb]
+  trusted_exact_match_langs: [nb, nn]   # AAT carries Nasjonalmuseet-contributed nb/nn altLabels
+
+facets:
+  preferred: materials        # influences tiering/ranking; never hard-filters
+  accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
+  accepted: [materials, formats]
+  linked_art_property:
+    techniques:   {target: production, prop: classified_as}
+    work_types:   {target: object,     prop: classified_as}
+    materials:    {target: object,     prop: made_of}
+    formats:      {target: object,     prop: dimension}
+    design_motifs: {target: object,    prop: classified_as}
+
+thresholds:
+  auto_accept:
+    mode: full                 # full | exact_only | off
+    min_score: 25
+    min_score_gap: 5
+    trusted_lang_exact_match: true
+  review_if:
+    cross_facet_ambiguity: true
+    broader_only: true
+
+source_schema:
+  id_field: ID
+  status_field: Status
+  include_status: [Gyldig]
+  logical_name_field: logicalName
+  label_field: label
+  level_pattern: "Level_{n}_{lang}"   # tolerant of more levels / other language codes
+  dedupe_by: ID
+
+lookup:
+  result_limit: 5          # candidates requested per reconciliation query
+  enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
+  min_candidate_score: 9   # drop candidates below this score before enriching (0 = keep all)
+
+review:
+  include_auto_accepted: true   # also write auto-accepted terms into 03b_review.csv
+
+translation:                     # optional step 1b (LLM English for terms missing one)
+  provider: anthropic
+  model: claude-sonnet-4-6       # pin the model; change as needed. (sjur: start with haiu-4-5, retry with sonnet-4-6 if needed)
+  context: "Norwegian museum conservation material terms, for cataloguing and matching against the Getty AAT"
+  batch_size: 15                 # terms per API call (cost control)
+  max_tokens: 4000
+  temperature: 0
+  include_siblings: true         # add same-parent siblings as disambiguation context
+  max_siblings: 6
+  prompt_version: v2             # bump to invalidate the translation cache
+  domain_by_root:               # top-level parent term -> domain phrase for the prompt
+    Arkitektonisk: "architecture (architecture museum context)"
+    Design: "design, arts and crafts"
+    Billedkunst: "visual arts, classical and contemporary art"

@@ -47,6 +47,7 @@ class Candidate:
     query_lang: str              # language the query was issued in
     is_exact: bool               # normalised exact match between query and matched_label
     facet: str | None            # authority-internal category (AAT facet / Iconclass division)
+    aat_facet: str | None = None # live authority facet label "<name> (<id>)", for human review
     pref_label_target: str | None = None   # preferred label in the target language
     scope_note: str | None = None
     ancestors: list[dict[str, Any]] = field(default_factory=list)   # [{"id":..., "label":...}]
@@ -64,6 +65,7 @@ class ClassifiedTerm:
     tier: str                    # "auto_accept" | "review" | "no_match"
     reasons: list[str]           # human-readable explanation of the tier decision
     proposed_facet: str | None
+    proposed_aat_facet: str | None = None    # live AAT facet "<name> (<id>)" of the best candidate
     proposed_target_term: str | None = None  # proposed English/target label
 
 

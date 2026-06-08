@@ -128,6 +128,7 @@ class AuthorityAdapter(ABC):
         for c in candidates:
             rec = self.fetch(c.concept_id)
             c.facet = rec.get("facet")
+            c.aat_facet = rec.get("aat_facet")
             c.scope_note = rec.get("scope_note")
             c.ancestors = rec.get("ancestors", [])
             c.cross_refs = rec.get("cross_refs", [])

@@ -21,13 +21,6 @@ from .config import Profile
 from .model import Candidate, ClassifiedTerm, SourceTerm
 
 
-def _score_gap(candidates: list[Candidate]) -> float:
-    if len(candidates) < 2:
-        return float("inf")
-    s = sorted((c.score for c in candidates), reverse=True)
-    return s[0] - s[1]
-
-
 def _trusted_exact(c: Candidate, profile: Profile) -> bool:
     return (
         c.is_exact
@@ -54,8 +47,18 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
         )
 
     ranked = sorted(candidates, key=lambda c: c.score, reverse=True)
-    best = ranked[0]
-    gap = _score_gap(ranked)
+    # When a specific facet set is required (accept_all=False), prefer the
+    # strongest candidate whose facet is accepted. This stops an out-of-facet top
+    # hit (e.g. an Associated-Concepts match in an object-name vocab) from
+    # hijacking the proposal or masking an in-facet alternative. If nothing is
+    # accepted, fall back to the overall top — it gets flagged and routed to
+    # review below, never auto-accepted.
+    accepted_cands = [c for c in ranked if facets.is_accepted(c.facet)]
+    best = accepted_cands[0] if accepted_cands else ranked[0]
+    # Gap is measured from `best` to its nearest rival of ANY facet, so a higher-
+    # scoring non-accepted rival shrinks (or negates) the gap and blocks auto-accept.
+    rival_scores = [c.score for c in ranked if c is not best]
+    gap = (best.score - max(rival_scores)) if rival_scores else float("inf")
     facet_ok = facets.is_accepted(best.facet)
     exact = _trusted_exact(best, profile) and aa.trusted_lang_exact_match
     reasons: list[str] = []
@@ -102,5 +105,6 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     )
     return ClassifiedTerm(
         term=term, candidates=ranked, best=best, tier=tier, reasons=reasons,
-        proposed_facet=best.facet, proposed_target_term=proposed_target,
+        proposed_facet=best.facet, proposed_aat_facet=best.aat_facet,
+        proposed_target_term=proposed_target,
     )

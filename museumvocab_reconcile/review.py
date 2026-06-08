@@ -20,7 +20,7 @@ from .model import ClassifiedTerm, Decision
 COLUMNS = [
     "id", "tier",                       # context (machine output)
     "source_term", "parents", "english_term", "english_source",  # context
-    "proposed_id", "proposed_uri", "proposed_facet", "proposed_target_term",
+    "proposed_id", "proposed_uri", "proposed_facet", "proposed_aat_facet", "proposed_target_term",
     "best_score", "reasons",            # context
     # ---- editable by the reviewer ----
     "accept", "chosen_id", "chosen_target_term", "chosen_facet", "notes",
@@ -58,6 +58,7 @@ def export_review_csv(
                     "proposed_id": best.concept_id if best else "",
                     "proposed_uri": best.uri if best else "",
                     "proposed_facet": ct.proposed_facet or "",
+                    "proposed_aat_facet": ct.proposed_aat_facet or "",
                     "proposed_target_term": ct.proposed_target_term or "",
                     "best_score": f"{best.score:.1f}" if best else "",
                     "reasons": " | ".join(ct.reasons)

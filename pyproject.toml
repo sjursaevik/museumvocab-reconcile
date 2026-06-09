@@ -20,3 +20,6 @@ packages = ["museumvocab_reconcile", "museumvocab_reconcile.adapters"]
 
 [tool.setuptools.package-data]
 museumvocab_reconcile = ["profiles/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

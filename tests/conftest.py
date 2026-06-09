@@ -66,6 +66,7 @@ def make_candidate(
     pref_label_target: str | None = "thing",
     aat_facet: str | None = None,
     ancestors: list[dict[str, Any]] | None = None,
+    query_term: str = "",
 ) -> Candidate:
     return Candidate(
         authority="aat",
@@ -77,6 +78,7 @@ def make_candidate(
         query_lang=matched_lang,
         is_exact=is_exact,
         facet=facet,
+        query_term=query_term,
         aat_facet=aat_facet,
         pref_label_target=pref_label_target,
         ancestors=ancestors or [],

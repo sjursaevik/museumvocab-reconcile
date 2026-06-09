@@ -116,7 +116,11 @@ class AatAdapter(AuthorityAdapter):
                     matched_label=h.get("name", ""),
                     matched_lang=lang,
                     query_lang=lang,
-                    # Getty's own `match` flag is unreliable; recompute exactness.
+                    query_term=label,
+                    # Provisional; recomputed against the fetched record's
+                    # language-tagged labels in enrich_candidates (the reconcile
+                    # `name` is the English display label, not necessarily the
+                    # label the query actually matched).
                     is_exact=self.normalise(h.get("name", "")) == self.normalise(label),
                     facet=None,
                     raw=h,

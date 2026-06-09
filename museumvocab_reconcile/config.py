@@ -52,6 +52,12 @@ class LanguageConfig:
     # Empty list (e.g. for Iconclass, which has no Norwegian) disables the
     # trusted-exact-match signal for that profile.
     trusted_exact_match_langs: list[str] = field(default_factory=list)
+    # Languages a candidate's *matched* label may be in for the match to count
+    # toward auto-accept. Empty = no restriction (any language counts). Set e.g.
+    # [nb, nn, en] to stop a coincidental match on an untracked-language label
+    # (which surfaces as "und") from being proposed/auto-accepted on score alone.
+    # Distinct from trusted_exact_match_langs, which only gates the exact path.
+    match_langs: list[str] = field(default_factory=list)
     # Variant language codes -> canonical code, so a source export tagged "NO"
     # is recognised as nb. Tolerates schema drift in level language codes.
     aliases: dict[str, str] = field(

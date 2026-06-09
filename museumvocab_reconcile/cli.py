@@ -309,6 +309,7 @@ def _classified_to_dict(ct: ClassifiedTerm) -> dict:
         "reasons": ct.reasons,
         "proposed_facet": ct.proposed_facet,
         "proposed_aat_facet": ct.proposed_aat_facet,
+        "proposed_hierarchy": ct.proposed_hierarchy,
         "proposed_target_term": ct.proposed_target_term,
     }
 
@@ -320,6 +321,7 @@ def _dict_to_classified(d: dict) -> ClassifiedTerm:
         term=SourceTerm(**d["term"]), candidates=cands, best=best,
         tier=d["tier"], reasons=d["reasons"], proposed_facet=d.get("proposed_facet"),
         proposed_aat_facet=d.get("proposed_aat_facet"),
+        proposed_hierarchy=d.get("proposed_hierarchy"),
         proposed_target_term=d.get("proposed_target_term"),
     )
 

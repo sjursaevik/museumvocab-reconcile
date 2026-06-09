@@ -66,6 +66,7 @@ class ClassifiedTerm:
     reasons: list[str]           # human-readable explanation of the tier decision
     proposed_facet: str | None
     proposed_aat_facet: str | None = None    # live AAT facet "<name> (<id>)" of the best candidate
+    proposed_hierarchy: str | None = None    # preferred sub-hierarchy "<label> (<id>)" the best sits in
     proposed_target_term: str | None = None  # proposed English/target label
 
 

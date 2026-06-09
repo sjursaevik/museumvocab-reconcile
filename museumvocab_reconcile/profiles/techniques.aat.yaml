@@ -15,6 +15,12 @@ facets:
   preferred: techniques        # influences tiering/ranking; never hard-filters
   accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
   accepted: [techniques, work_types, materials, formats, design_motifs]
+  hierarchy_mode: prefer       # prefer | off — `prefer` favours candidates in a
+                               # preferred sub-hierarchy when picking the proposal
+  preferred_hierarchies: {}    # AAT anchor id -> label; refines candidate selection
+                               # WITHIN accepted facets (never changes the gate).
+                               # Fill from: python tools/profile_hierarchies.py 02_candidates.json --emit-yaml
+                               # then confirm ids with: python tools/verify_facets.py <id> ...
   linked_art_property:
     techniques:   {target: production, prop: classified_as}
     work_types:   {target: object,     prop: classified_as}

@@ -92,3 +92,133 @@ def test_match_langs_allows_in_set_language():
     rival = make_candidate(concept_id="B", score=30, facet="work_types")
     out = classify(make_term(), [c, rival], prof)
     assert out.tier == "auto_accept"
+
+
+# ---- prefer in-match_langs candidates when selecting best -----------------
+
+def test_prefer_match_langs_proposes_real_match_over_higher_scored_und():
+    prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
+    und = make_candidate(concept_id="U", score=80, is_exact=True, matched_lang="und",
+                         facet="work_types")
+    en = make_candidate(concept_id="E", score=50, is_exact=False, matched_lang="en",
+                        facet="work_types")
+    out = classify(make_term(), [und, en], prof)
+    assert out.best.concept_id == "E"          # the credible match is proposed
+    # higher-scored und rival shrinks the gap, so it routes to review (conservative)
+    assert out.tier == "review"
+
+
+def test_prefer_match_langs_auto_accepts_when_real_match_leads():
+    prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
+    en = make_candidate(concept_id="E", score=60, is_exact=False, matched_lang="en",
+                        facet="work_types")
+    und = make_candidate(concept_id="U", score=30, matched_lang="und", facet="work_types")
+    out = classify(make_term(), [en, und], prof)
+    assert out.best.concept_id == "E"
+    assert out.tier == "auto_accept"
+
+
+def test_all_und_falls_back_and_gate_routes_to_review():
+    prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
+    u1 = make_candidate(concept_id="U", score=80, matched_lang="und", facet="work_types")
+    out = classify(make_term(), [u1], prof)
+    assert out.best.concept_id == "U"
+    assert out.tier == "review"
+    assert any("match_langs" in r for r in out.reasons)
+
+
+def test_match_langs_warning_when_trusted_langs_omitted():
+    prof = make_profile({"languages": {"match_langs": ["en"]}})  # omits nb, nn
+    assert any("trusted_exact_match_langs" in w for w in prof.validate())
+
+
+# ---- _parse_linked_art language attribution -------------------------------
+
+def test_untagged_name_is_english_tagged_unmapped_is_und():
+    from museumvocab_reconcile.adapters.aat import _parse_linked_art
+    node = {
+        "type": "Type",
+        "identified_by": [
+            # untagged English altLabel -> should be "en", not "und"
+            {"type": "Name", "content": "licences"},
+            # French prefLabel carrying a (mapped-as-None) language URI -> "und"
+            {"type": "Name", "content": "agrément",
+             "language": [{"id": "http://vocab.getty.edu/aat/300387000"}],  # not in LANG_URI
+             "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+            # tagged English prefLabel -> "en"
+            {"type": "Name", "content": "registrations (licenses)",
+             "language": [{"id": "http://vocab.getty.edu/aat/300388277"}],
+             "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+        ],
+    }
+    pref, alt, _scope, _broader = _parse_linked_art(node)
+    assert pref.get("en") == "registrations (licenses)"
+    assert pref.get("und") == "agrément"           # tagged foreign stays und
+    assert "licences" in alt.get("en", [])         # untagged altLabel -> en
+
+
+def test_matched_lang_on_real_getty_language_uris():
+    # End-to-end of the 300027760 fix: an English query coincides with the French
+    # altLabel -> matched_lang 'fr' (gated by match_langs); an English altLabel
+    # query -> matched_lang 'en' (no longer 'und').
+    from museumvocab_reconcile.adapters.aat import _parse_linked_art, AatAdapter
+    node = {"type": "Type", "identified_by": [
+        {"type": "Name", "content": "registrations",
+         "language": [{"id": "http://vocab.getty.edu/language/en"}],
+         "alternative": [{"type": "Name", "content": "registrations (licenses)",
+                          "language": [{"id": "http://vocab.getty.edu/language/en"}]}],
+         "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+        {"type": "Name", "content": "agrément",
+         "language": [{"id": "http://vocab.getty.edu/language/fr"}],
+         "classified_as": [{"id": "http://vocab.getty.edu/term/type/AlternateDescriptor"}]},
+        {"type": "Name", "content": "registration",
+         "language": [{"id": "http://vocab.getty.edu/language/en"}],
+         "alternative": [{"type": "Name", "content": "registration (license)",
+                          "language": [{"id": "http://vocab.getty.edu/language/en"}]}]},
+    ]}
+    pref, alt, *_ = _parse_linked_art(node)
+    rec = {"pref_labels": pref, "alt_labels": alt}
+    a = AatAdapter(cache=None)
+
+    fr = make_candidate(matched_lang="en", is_exact=False, query_term="agrément")
+    a._refine_match(fr, rec)
+    assert (fr.matched_lang, fr.is_exact) == ("fr", True)
+
+    en = make_candidate(matched_lang="en", is_exact=False, query_term="registration (license)")
+    a._refine_match(en, rec)
+    assert (en.matched_lang, en.is_exact) == ("en", True)
+
+
+def test_norwegian_altlabel_resolves_and_auto_accepts_end_to_end():
+    # Real shape of record 300386559: Nasjonalmuseet-contributed nb/nn 'akryl'
+    # tagged with /language/nb and /language/nn. These must resolve to nb/nn (not
+    # 'und') so the trusted-exact auto-accept — the Norwegian-first signal the
+    # whole pipeline relies on — fires. Regression guard for the URI-format bug.
+    from museumvocab_reconcile.adapters.aat import _parse_linked_art, AatAdapter
+
+    def _n(content, code, pref=False):
+        return {"type": "Name", "content": content,
+                "language": [{"_label": code, "id": f"http://vocab.getty.edu/language/{code}"}],
+                "alternative": [{"type": "Name", "content": content,
+                                 "language": [{"id": f"http://vocab.getty.edu/language/{code}"}]}],
+                "classified_as": ([{"id": "http://vocab.getty.edu/aat/300404670"}] if pref else
+                                  [{"id": "http://vocab.getty.edu/term/type/AlternateDescriptor"}])}
+    node = {"type": "Type", "_label": "acrylic (fiber)", "identified_by": [
+        {"type": "Name", "content": "acrylic",
+         "language": [{"id": "http://vocab.getty.edu/language/en"}],
+         "alternative": [{"type": "Name", "content": "acrylic (fiber)",
+                          "language": [{"id": "http://vocab.getty.edu/language/en"}]}],
+         "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+        _n("akryl", "nb"), _n("akryl", "nn"),
+    ]}
+    pref, alt, *_ = _parse_linked_art(node)
+    assert alt["nb"] == ["akryl"] and alt["nn"] == ["akryl"]
+
+    cand = make_candidate(matched_lang="nb", is_exact=False, query_term="akryl",
+                          facet="materials", pref_label_target="acrylic (fiber)")
+    AatAdapter(cache=None)._refine_match(cand, {"pref_labels": pref, "alt_labels": alt})
+    assert (cand.matched_lang, cand.is_exact) == ("nb", True)
+
+    out = classify(make_term(nb="akryl"), [cand], make_profile())  # trusted [nb, nn]
+    assert out.tier == "auto_accept"
+    assert any("trusted language (nb)" in r for r in out.reasons)

@@ -54,12 +54,23 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     # accepted, fall back to the overall top — it gets flagged and routed to
     # review below, never auto-accepted.
     accepted_cands = [c for c in ranked if facets.is_accepted(c.facet)]
-    best = accepted_cands[0] if accepted_cands else ranked[0]
-    # `prefer` mode: a facet is too coarse to rank, so among accepted candidates
-    # favour one that also sits in a preferred sub-hierarchy. This steers WHICH
+    # Among accepted candidates, prefer those whose MATCHED label is in an
+    # accepted match-language: a coincidental hit in an untracked language
+    # (matched_lang "und") shouldn't be proposed over a real nb/nn/en match even
+    # if it scored higher. If none qualify, keep the accepted set (the best then
+    # trips the match_langs review gate below).
+    pool = accepted_cands
+    match_langs = profile.languages.match_langs
+    if match_langs and accepted_cands:
+        in_ml = [c for c in accepted_cands if c.matched_lang in match_langs]
+        if in_ml:
+            pool = in_ml
+    best = pool[0] if pool else ranked[0]
+    # `prefer` mode: a facet is too coarse to rank, so within the pool favour a
+    # candidate that also sits in a preferred sub-hierarchy. This steers WHICH
     # candidate is proposed; the accepted-facet gate is unchanged. Two guards keep
     # it safe: (1) never demote a trusted-language exact top pick — that signal is
-    # sacrosanct (see skill: nb/nn exact ≈ certain); (2) accepted_cands keeps score
+    # sacrosanct (see skill: nb/nn exact ≈ certain); (2) the pool keeps score
     # order, so in_hier[0] is the strongest in-hierarchy candidate. If steering
     # picks a lower-scored candidate the gap below shrinks accordingly, so an
     # uncertain result routes to review rather than auto-accepting an
@@ -67,10 +78,10 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     if (
         facets.hierarchy_mode == "prefer"
         and facets.preferred_hierarchies
-        and accepted_cands
-        and not _trusted_exact(accepted_cands[0], profile)
+        and pool
+        and not _trusted_exact(pool[0], profile)
     ):
-        in_hier = [c for c in accepted_cands if facets.hierarchy_hit(c)]
+        in_hier = [c for c in pool if facets.hierarchy_hit(c)]
         if in_hier:
             best = in_hier[0]
     # Gap is measured from `best` to its nearest rival of ANY facet, so a higher-

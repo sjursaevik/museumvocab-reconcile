@@ -56,11 +56,13 @@ def test_linked_art_maps_language_uris_and_pref():
     assert broader == ["300264092"]
 
 
-def test_linked_art_english_without_language_lands_under_und():
+def test_linked_art_untagged_name_is_english():
+    # Getty leaves the English form's Name untagged; it must land under "en",
+    # not "und", so a source English term that matches it reports matched_lang en.
     node = {"type": "Type", "identified_by": [_name("oil paint", pref=True)]}
     pref, _alt, _scope, _broader = _parse_linked_art(node)
-    assert "en" not in pref
-    assert pref["und"] == "oil paint"
+    assert pref["en"] == "oil paint"
+    assert "und" not in pref
 
 
 def test_linked_art_broader_from_member_of():
@@ -84,14 +86,15 @@ class _DocAdapter(AatAdapter):
 
 
 def test_node_backfills_english_pref_from_label():
-    # English preferred Name carries no language (-> "und") and pref["en"] is
-    # empty; the top-level _label must backfill pref["en"] so review/output show
-    # the AAT term, not the source's English.
+    # No Name is classified as preferred, so pref["en"] is empty; the top-level
+    # _label must backfill it so review/output show the AAT term, not the
+    # source's English. (Untagged Names are now attributed to "en" directly, so
+    # this exercises the remaining backfill path: a record with no preferred Name.)
     doc = {
         "id": "http://vocab.getty.edu/aat/300011111",
         "type": "Type",
         "_label": "oil paint",
-        "identified_by": [_name("oil paint", pref=True)],
+        "identified_by": [_name("paint, oil", pref=False, lang_uri="300388277")],
         "broader": [{"id": "http://vocab.getty.edu/aat/300264091"}],
     }
     node = _DocAdapter(doc)._node("300011111")
@@ -140,3 +143,39 @@ def test_lang_uri_map_covers_norwegian():
     # The nb/nn auto-accept signal depends on these being mapped on the LA path.
     assert aat.LANG_URI["300391418"] == "nb"
     assert aat.LANG_URI["300388992"] == "nn"
+
+
+def _lname(content, code, pref=False, alternative=None):
+    n = {"type": "Name", "content": content,
+         "language": [{"id": f"http://vocab.getty.edu/language/{code}", "_label": code}]}
+    if alternative:
+        n["alternative"] = [{"type": "Name", "content": alternative,
+                             "language": [{"id": f"http://vocab.getty.edu/language/{code}"}]}]
+    n["classified_as"] = [{"id": "http://vocab.getty.edu/aat/300404670"}] if pref else []
+    return n
+
+
+def test_linked_art_resolves_language_slash_uris_and_harvests_alternatives():
+    # Real Getty shape (record 300027760): languages are /language/<code> URIs,
+    # and the qualified parenthetical descriptor lives in `alternative`.
+    node = {"type": "Type", "_label": "registrations (licenses)", "identified_by": [
+        _lname("registrations", "en", pref=True, alternative="registrations (licenses)"),
+        _lname("agrément", "fr", alternative="agrément"),
+        _lname("registration", "en", alternative="registration (license)"),
+        _lname("registratiebewijzen", "nl"),
+    ]}
+    pref, alt, _scope, _broader = _parse_linked_art(node)
+    assert pref == {"en": "registrations (licenses)"}      # qualified form, not "und"
+    assert alt["fr"] == ["agrément"]                        # was collapsing to "und"
+    assert "registration (license)" in alt["en"]            # alternative harvested
+    assert "registrations" in alt["en"]                     # base kept for matching
+    assert alt["nl"] == ["registratiebewijzen"]
+
+
+def test_resolve_lang_handles_both_uri_forms_and_norwegian_aliases():
+    from museumvocab_reconcile.adapters.aat import _resolve_lang
+    assert _resolve_lang({"language": [{"id": "http://vocab.getty.edu/language/fr"}]}) == "fr"
+    assert _resolve_lang({"language": [{"id": "http://vocab.getty.edu/aat/300391418"}]}) == "nb"
+    assert _resolve_lang({"language": [{"id": "http://vocab.getty.edu/language/no"}]}) == "nb"
+    assert _resolve_lang({"language": [{"id": "x", "_label": "nn"}]}) == "nn"
+    assert _resolve_lang({}) == ""

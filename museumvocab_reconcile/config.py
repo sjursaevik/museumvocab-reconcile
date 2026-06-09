@@ -244,6 +244,16 @@ class Profile:
                 "auto_accept.mode is 'exact_only' but trusted_exact_match_langs is "
                 "empty: nothing can auto-accept, equivalent to mode 'off'."
             )
+        missing = [
+            l for l in self.languages.trusted_exact_match_langs
+            if self.languages.match_langs and l not in self.languages.match_langs
+        ]
+        if missing:
+            warnings.append(
+                f"languages.match_langs is set but omits trusted_exact_match_langs "
+                f"{missing}: a trusted exact match in those languages would be "
+                f"down-ranked and gated to review. Add them to match_langs."
+            )
         if self.facets.preferred_hierarchies and self.facets.hierarchy_mode == "off":
             warnings.append(
                 "facets.preferred_hierarchies is set but facets.hierarchy_mode is "

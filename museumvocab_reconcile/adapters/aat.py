@@ -355,12 +355,17 @@ def _parse_linked_art(node: dict[str, Any]) -> tuple[dict, dict, str | None, lis
         content = name.get("content")
         if not content:
             continue
-        lang_codes = [
-            LANG_URI.get(_clean_id(l.get("id", "")))
-            for l in _as_list(name.get("language"))
-            if isinstance(l, dict)
-        ]
-        lang = next((c for c in lang_codes if c), None) or "und"
+        langs_present = [l for l in _as_list(name.get("language")) if isinstance(l, dict)]
+        lang_codes = [LANG_URI.get(_clean_id(l.get("id", ""))) for l in langs_present]
+        mapped = next((c for c in lang_codes if c), None)
+        if mapped:
+            lang = mapped
+        elif not langs_present:
+            # Getty leaves the English form's Name untagged (the basis for the
+            # _label English backfill below); treat any untagged Name as English.
+            lang = "en"
+        else:
+            lang = "und"   # carries a language URI we don't map (e.g. French)
         is_pref = any(
             _clean_id(c.get("id", "")) in PREF_TYPES
             for c in _as_list(name.get("classified_as")) if isinstance(c, dict)

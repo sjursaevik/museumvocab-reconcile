@@ -92,3 +92,66 @@ def test_match_langs_allows_in_set_language():
     rival = make_candidate(concept_id="B", score=30, facet="work_types")
     out = classify(make_term(), [c, rival], prof)
     assert out.tier == "auto_accept"
+
+
+# ---- prefer in-match_langs candidates when selecting best -----------------
+
+def test_prefer_match_langs_proposes_real_match_over_higher_scored_und():
+    prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
+    und = make_candidate(concept_id="U", score=80, is_exact=True, matched_lang="und",
+                         facet="work_types")
+    en = make_candidate(concept_id="E", score=50, is_exact=False, matched_lang="en",
+                        facet="work_types")
+    out = classify(make_term(), [und, en], prof)
+    assert out.best.concept_id == "E"          # the credible match is proposed
+    # higher-scored und rival shrinks the gap, so it routes to review (conservative)
+    assert out.tier == "review"
+
+
+def test_prefer_match_langs_auto_accepts_when_real_match_leads():
+    prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
+    en = make_candidate(concept_id="E", score=60, is_exact=False, matched_lang="en",
+                        facet="work_types")
+    und = make_candidate(concept_id="U", score=30, matched_lang="und", facet="work_types")
+    out = classify(make_term(), [en, und], prof)
+    assert out.best.concept_id == "E"
+    assert out.tier == "auto_accept"
+
+
+def test_all_und_falls_back_and_gate_routes_to_review():
+    prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
+    u1 = make_candidate(concept_id="U", score=80, matched_lang="und", facet="work_types")
+    out = classify(make_term(), [u1], prof)
+    assert out.best.concept_id == "U"
+    assert out.tier == "review"
+    assert any("match_langs" in r for r in out.reasons)
+
+
+def test_match_langs_warning_when_trusted_langs_omitted():
+    prof = make_profile({"languages": {"match_langs": ["en"]}})  # omits nb, nn
+    assert any("trusted_exact_match_langs" in w for w in prof.validate())
+
+
+# ---- _parse_linked_art language attribution -------------------------------
+
+def test_untagged_name_is_english_tagged_unmapped_is_und():
+    from museumvocab_reconcile.adapters.aat import _parse_linked_art
+    node = {
+        "type": "Type",
+        "identified_by": [
+            # untagged English altLabel -> should be "en", not "und"
+            {"type": "Name", "content": "licences"},
+            # French prefLabel carrying a (mapped-as-None) language URI -> "und"
+            {"type": "Name", "content": "agrément",
+             "language": [{"id": "http://vocab.getty.edu/aat/300387000"}],  # not in LANG_URI
+             "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+            # tagged English prefLabel -> "en"
+            {"type": "Name", "content": "registrations (licenses)",
+             "language": [{"id": "http://vocab.getty.edu/aat/300388277"}],
+             "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+        ],
+    }
+    pref, alt, _scope, _broader = _parse_linked_art(node)
+    assert pref.get("en") == "registrations (licenses)"
+    assert pref.get("und") == "agrément"           # tagged foreign stays und
+    assert "licences" in alt.get("en", [])         # untagged altLabel -> en

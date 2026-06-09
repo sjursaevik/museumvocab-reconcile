@@ -187,3 +187,38 @@ def test_matched_lang_on_real_getty_language_uris():
     en = make_candidate(matched_lang="en", is_exact=False, query_term="registration (license)")
     a._refine_match(en, rec)
     assert (en.matched_lang, en.is_exact) == ("en", True)
+
+
+def test_norwegian_altlabel_resolves_and_auto_accepts_end_to_end():
+    # Real shape of record 300386559: Nasjonalmuseet-contributed nb/nn 'akryl'
+    # tagged with /language/nb and /language/nn. These must resolve to nb/nn (not
+    # 'und') so the trusted-exact auto-accept — the Norwegian-first signal the
+    # whole pipeline relies on — fires. Regression guard for the URI-format bug.
+    from museumvocab_reconcile.adapters.aat import _parse_linked_art, AatAdapter
+
+    def _n(content, code, pref=False):
+        return {"type": "Name", "content": content,
+                "language": [{"_label": code, "id": f"http://vocab.getty.edu/language/{code}"}],
+                "alternative": [{"type": "Name", "content": content,
+                                 "language": [{"id": f"http://vocab.getty.edu/language/{code}"}]}],
+                "classified_as": ([{"id": "http://vocab.getty.edu/aat/300404670"}] if pref else
+                                  [{"id": "http://vocab.getty.edu/term/type/AlternateDescriptor"}])}
+    node = {"type": "Type", "_label": "acrylic (fiber)", "identified_by": [
+        {"type": "Name", "content": "acrylic",
+         "language": [{"id": "http://vocab.getty.edu/language/en"}],
+         "alternative": [{"type": "Name", "content": "acrylic (fiber)",
+                          "language": [{"id": "http://vocab.getty.edu/language/en"}]}],
+         "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+        _n("akryl", "nb"), _n("akryl", "nn"),
+    ]}
+    pref, alt, *_ = _parse_linked_art(node)
+    assert alt["nb"] == ["akryl"] and alt["nn"] == ["akryl"]
+
+    cand = make_candidate(matched_lang="nb", is_exact=False, query_term="akryl",
+                          facet="materials", pref_label_target="acrylic (fiber)")
+    AatAdapter(cache=None)._refine_match(cand, {"pref_labels": pref, "alt_labels": alt})
+    assert (cand.matched_lang, cand.is_exact) == ("nb", True)
+
+    out = classify(make_term(nb="akryl"), [cand], make_profile())  # trusted [nb, nn]
+    assert out.tier == "auto_accept"
+    assert any("trusted language (nb)" in r for r in out.reasons)

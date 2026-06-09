@@ -217,6 +217,19 @@ All stages are implemented and in working use: prep (schema-drift tolerant
 loader), optional LLM translation (`translate` / `translate-apply` /
 `retranslate` / `flag-anomalies`), lookup (with retry/backoff, resume, and
 compact caching), tiering, review export/ingest, and assembly (JSON + CSV +
-Linked Art + log). There is no automated test suite yet; the modules are
-structured so the engine logic (tiering, parsing, CSV round-trips) can be tested
-without network access.
+Linked Art + log).
+
+### Tests
+
+An offline test suite lives in `tests/` (no network, no Getty, no secrets — fake
+responses and fixture nodes are injected). It covers the engine logic and the
+known tripwires: confidence tiering and trusted-language (`nb`/`nn`) auto-accept,
+AAT Linked-Art parsing (the post-2024 default, not SKOS), preferred-parent facet
+resolution, and the rate-limit rule that a persistent reconcile failure must
+*raise* (recorded as `ERROR`, retried on resume) rather than be logged as
+`no_match`. Run them with:
+
+```powershell
+pip install pytest
+python -m pytest -q
+```

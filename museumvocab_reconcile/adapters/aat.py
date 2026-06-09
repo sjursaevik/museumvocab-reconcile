@@ -64,7 +64,7 @@ AAT_TOP_ID = "300000000"
 # sandbox cannot). The reviewer also sees the live `aat_facet` label per term, so
 # a missing/wrong mapping here is now visible rather than silent.
 FACET_ROOTS: dict[str, str] = {
-    "300264092": "work_types",      # Objects Facet (ROOT) — VERIFIED. Do not remove:
+    "300264092": "work_types",      # Objects Facet (ROOT) — VERIFIED. Do not remove:  
                                     # without it, deep object lineages resolve to no facet.
     "300053001": "techniques",      # Processes and Techniques (Activities Facet) [pilot]
     "300054216": "techniques",      # painting techniques [pilot]

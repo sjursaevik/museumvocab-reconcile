@@ -12,11 +12,22 @@ languages:
 
 facets:
   preferred: work_types        # influences tiering/ranking; never hard-filters
-  accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
+  accept_all: true            # when true, any returned facet is accepted and `accepted` is ignored
   accepted: [materials, formats, work_types, techniques]
   hierarchy_mode: prefer       # prefer | off — `prefer` favours candidates in a
                                # preferred sub-hierarchy when picking the proposal
-  preferred_hierarchies: {}    # AAT anchor id -> label; refines candidate selection
+  preferred_hierarchies: {
+     # --- Objects Facet ---
+    "300209261": "Costume (hierarchy name)",   # 355 terms
+    "300045611": "Containers (hierarchy name)",   # 331 terms
+    "300022238": "Tools and Equipment (hierarchy name)",   # 314 terms
+    "300179869": "Visual Works (hierarchy name)",   # 255 terms
+    "300037335": "Furnishings (hierarchy name)",   # 212 terms
+    "300241507": "object groupings",   # 78 terms
+    "300185711": "Object Genres (hierarchy name)",
+    # --- Activities Facet ---
+    "300053003": "<processes and techniques by specific type>"   # 27 terms
+  }    # AAT anchor id -> label; refines candidate selection
                                # WITHIN accepted facets (never changes the gate).
                                # Fill from: python tools/profile_hierarchies.py 02_candidates.json --emit-yaml
                                # then confirm ids with: python tools/verify_facets.py <id> ...
@@ -31,7 +42,7 @@ thresholds:
   auto_accept:
     mode: full                 # full | exact_only | off
     min_score: 25
-    min_score_gap: 5
+    min_score_gap: 15
     trusted_lang_exact_match: true
   review_if:
     cross_facet_ambiguity: true
@@ -47,9 +58,9 @@ source_schema:
   dedupe_by: ID
 
 lookup:
-  result_limit: 5          # candidates requested per reconciliation query
+  result_limit: 10          # candidates requested per reconciliation query
   enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
-  min_candidate_score: 13   # drop candidates below this score before enriching (0 = keep all)
+  min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
 
 review:
   include_auto_accepted: true   # also write auto-accepted terms into 03b_review.csv

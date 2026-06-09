@@ -171,6 +171,10 @@ class LookupConfig:
     enrich_top_n: int = 5
     # Drop candidates scoring below this before enriching (0 = keep all).
     min_candidate_score: float = 0.0
+    # When the primary (source/target) queries yield no usable candidate, query
+    # at most this many of the term's LLM alternative labels as a fallback
+    # (0 disables the fallback entirely).
+    max_alternative_queries: int = 3
 
 
 @dataclass
@@ -190,7 +194,11 @@ class TranslationConfig:
     temperature: float = 0.0
     include_siblings: bool = True
     max_siblings: int = 6
-    prompt_version: str = "v2"         # bump to invalidate the translation cache
+    prompt_version: str = "v3"         # bump to invalidate the translation cache
+    # Internal facet names the LLM may predict in `expected_facet` (advisory
+    # signal for tiering). Usually left empty and derived at runtime from
+    # facets.accepted; set explicitly only to override that derivation.
+    facet_options: list[str] = field(default_factory=list)
     # Optional: top-level (root) parent term -> domain phrase for the prompt, so
     # a term under "Arkitektonisk" is read as architecture, "Billedkunst" as
     # visual arts, etc. Unmapped roots are passed through verbatim.

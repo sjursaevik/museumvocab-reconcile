@@ -75,6 +75,7 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     # picks a lower-scored candidate the gap below shrinks accordingly, so an
     # uncertain result routes to review rather than auto-accepting an
     # out-of-hierarchy rival — the conservative direction.
+    hier_steered = False
     if (
         facets.hierarchy_mode == "prefer"
         and facets.preferred_hierarchies
@@ -84,6 +85,29 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
         in_hier = [c for c in pool if facets.hierarchy_hit(c)]
         if in_hier:
             best = in_hier[0]
+            hier_steered = True
+    # Advisory expected-facet tie-break (LLM prediction from the translate step):
+    # among near-tied pool candidates, prefer one matching the predicted facet.
+    # Strictly a proposal-steering signal with the same guards as hierarchy
+    # steering — never overrides a trusted exact, never beats a human-curated
+    # hierarchy hit, and never changes the accept gate. Picking a lower-scored
+    # candidate shrinks the gap below, so uncertainty still routes to review.
+    expected_facet_agrees: bool | None = None
+    if term.expected_facet:
+        if (
+            pool
+            and not hier_steered
+            and not _trusted_exact(pool[0], profile)
+            and best.facet != term.expected_facet
+        ):
+            near = [
+                c for c in pool
+                if abs(c.score - pool[0].score) <= aa.min_score_gap
+                and c.facet == term.expected_facet
+            ]
+            if near:
+                best = near[0]
+        expected_facet_agrees = best.facet == term.expected_facet
     # Gap is measured from `best` to its nearest rival of ANY facet, so a higher-
     # scoring non-accepted rival shrinks (or negates) the gap and blocks auto-accept.
     rival_scores = [c.score for c in ranked if c is not best]
@@ -108,6 +132,21 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             f"best candidate matched via language {best.matched_lang!r}, "
             f"not in match_langs {match_langs}"
         )
+    # LLM English is a LOOKUP QUERY ONLY, never a trust signal: if the best
+    # candidate was surfaced by a target-language query whose label did not come
+    # from the source data (target_source llm/human — i.e. the translate step,
+    # including its alternatives), the term must go to review regardless of
+    # score, gap, or even an exact label match. Only nb/nn queries (always
+    # human-catalogued) or source-data English can support auto-accept.
+    if (
+        best.query_lang == profile.languages.target
+        and term.target_source != "source_data"
+    ):
+        reasons.append(
+            f"surfaced via {term.target_source} {profile.languages.target!r} query "
+            f"{best.query_term!r} — review only, never auto-accept"
+        )
+        exact = False  # an exact hit on a generated label is coincidence, not trust
 
     # ---- auto-accept decision, gated by mode -------------------------------
     if aa.mode == "off":
@@ -146,6 +185,14 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     )
     if proposed_hierarchy:
         reasons.append(f"in preferred hierarchy {proposed_hierarchy}")
+    # Advisory note for the reviewer: does the LLM's facet prediction agree with
+    # the proposed candidate? Appended after the tier decision — informational only.
+    if expected_facet_agrees is not None:
+        reasons.append(
+            f"LLM expected facet {term.expected_facet!r} "
+            + ("agrees with proposal" if expected_facet_agrees
+               else f"differs from proposed facet {best.facet!r}")
+        )
 
     proposed_target = best.pref_label_target or (
         term.main_target_term if term.main_target_term else None

@@ -26,6 +26,15 @@ class SourceTerm:
     parents_target: list[str]    # parent terms, target language
     raw: dict[str, Any] = field(default_factory=dict)  # original row, for traceability
     target_source: str = "source_data"  # provenance of main_target_term: source_data | llm | human
+    # Alternative target-language labels from the translation step (LLM-suggested,
+    # possibly pruned by the cataloguer). Used by lookup as FALLBACK queries when
+    # the primary queries return nothing useful — same trust level as the LLM
+    # main English: lookup query only, never an auto-accept signal.
+    target_alternatives: list[str] = field(default_factory=list)
+    # LLM-predicted internal facet (e.g. "materials"). ADVISORY ONLY: tiering may
+    # use it to break ties among near-tied cross-facet candidates and to annotate
+    # review reasons; it never widens the accept gate or auto-accepts anything.
+    expected_facet: str | None = None
 
     @property
     def is_leaf(self) -> bool:

@@ -133,7 +133,38 @@ class AuthorityAdapter(ABC):
             c.ancestors = rec.get("ancestors", [])
             c.cross_refs = rec.get("cross_refs", [])
             c.pref_label_target = rec.get("pref_labels", {}).get(target_lang)
+            if c.query_term:
+                self._refine_match(c, rec)
         return candidates
+
+    def _refine_match(self, c: Candidate, rec: dict[str, Any]) -> None:
+        """Recompute matched_label / matched_lang / is_exact against the fetched
+        record's language-tagged labels, rather than trusting the reconcile
+        display name (always the English label) and the query language.
+
+        A query can exactly match a label in a language OTHER than the one it was
+        issued in — e.g. an English term that coincides with a French prefLabel
+        (tagged "und" when its language URI isn't mapped), or an nb/nn query that
+        Getty matched via a Norwegian altLabel while the display name stays
+        English. Recording the true matched language is what lets the
+        trusted-exact gate (nb/nn) and the match-language filter behave correctly.
+        Only EXACT matches are reassigned; a fuzzy hit keeps its provisional
+        display values and is simply marked not-exact."""
+        q = self.normalise(c.query_term)
+        if not q:
+            return
+        pairs: list[tuple[str, str]] = list((rec.get("pref_labels") or {}).items())
+        for lang, vals in (rec.get("alt_labels") or {}).items():
+            pairs.extend((lang, v) for v in vals)
+        exact = [(lang, val) for lang, val in pairs if self.normalise(val) == q]
+        if exact:
+            # Among equal matches prefer the query language, then a stable order,
+            # so a word identical across languages is attributed to the query lang.
+            exact.sort(key=lambda lv: (0 if lv[0] == c.query_lang else 1, lv[0]))
+            lang, val = exact[0]
+            c.matched_lang, c.matched_label, c.is_exact = lang, val, True
+        else:
+            c.is_exact = False
 
     @staticmethod
     def normalise(text: str) -> str:

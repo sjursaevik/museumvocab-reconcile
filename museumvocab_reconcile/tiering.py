@@ -89,6 +89,14 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             f"best candidate facet {best.facet!r} not in accepted set"
             + ("" if facets.accept_all else f" {facets.accepted}")
         )
+    match_langs = profile.languages.match_langs
+    if match_langs and best.matched_lang not in match_langs:
+        # `und` = matched a label in a language we don't track (e.g. a French
+        # prefLabel an English query coincided with). Don't trust it on score.
+        reasons.append(
+            f"best candidate matched via language {best.matched_lang!r}, "
+            f"not in match_langs {match_langs}"
+        )
 
     # ---- auto-accept decision, gated by mode -------------------------------
     if aa.mode == "off":

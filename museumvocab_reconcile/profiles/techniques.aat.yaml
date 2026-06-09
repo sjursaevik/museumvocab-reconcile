@@ -10,6 +10,8 @@ languages:
     leaf: [nb, en]
     root: [en, nb]
   trusted_exact_match_langs: [nb, nn]   # AAT carries Nasjonalmuseet-contributed nb/nn altLabels
+  # match_langs: [nb, nn, en]  # uncomment to require the MATCHED label be in these langs;
+                               # blocks coincidental hits on untracked-language labels ("und")
 
 facets:
   preferred: techniques        # influences tiering/ranking; never hard-filters

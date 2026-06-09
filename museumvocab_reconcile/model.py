@@ -47,6 +47,7 @@ class Candidate:
     query_lang: str              # language the query was issued in
     is_exact: bool               # normalised exact match between query and matched_label
     facet: str | None            # authority-internal category (AAT facet / Iconclass division)
+    query_term: str = ""         # the source query string that produced this hit (for match recompute)
     aat_facet: str | None = None # live authority facet label "<name> (<id>)", for human review
     pref_label_target: str | None = None   # preferred label in the target language
     scope_note: str | None = None

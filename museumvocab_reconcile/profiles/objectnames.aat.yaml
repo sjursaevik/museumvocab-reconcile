@@ -9,6 +9,7 @@ languages:
     leaf: [nb, en]
     root: [en, nb]
   trusted_exact_match_langs: [nb, nn]   # AAT carries Nasjonalmuseet-contributed nb/nn altLabels
+  match_langs: [nb, nn, en] 
 
 facets:
   preferred: work_types        # influences tiering/ranking; never hard-filters

@@ -91,6 +91,40 @@ LANG_URI: dict[str, str] = {
     "300388992": "nn",   # Norwegian (Nynorsk) — verified
 }
 
+# Norwegian macro/ISO variants -> the codes the trust logic uses.
+_LANG_ALIASES = {"no": "nb", "nob": "nb", "nor": "nb", "nno": "nn"}
+
+
+def _norm_lang(code: str) -> str:
+    c = (code or "").strip().lower()
+    return _LANG_ALIASES.get(c, c)
+
+
+def _resolve_lang(obj: dict[str, Any]) -> str:
+    """Resolve a Name/alternative's BCP-47 language code from its ``language``.
+
+    Getty's current Linked.Art uses ``.../language/<code>`` URIs (the segment IS
+    the BCP-47 code); older records use AAT numeric language-concept URIs mapped
+    via ``LANG_URI``; both also carry the code in the language node's ``_label``.
+    Returns "" when no language is present or resolvable, so the caller can apply
+    the untagged-is-English convention. Earlier code only knew the AAT-number
+    form, so every label on a ``/language/`` record collapsed to "und" — silently
+    disabling the nb/nn trusted-exact signal."""
+    for l in _as_list(obj.get("language")):
+        if not isinstance(l, dict):
+            continue
+        rid = l.get("id", "") or ""
+        if "/language/" in rid:
+            code = rid.rsplit("/language/", 1)[1].strip("/")
+            if code:
+                return _norm_lang(code)
+        mapped = LANG_URI.get(_clean_id(rid))
+        if mapped:
+            return mapped
+        if l.get("_label"):
+            return _norm_lang(l["_label"])
+    return ""
+
 
 class AatAdapter(AuthorityAdapter):
     name = "aat"
@@ -344,36 +378,33 @@ def _parse_gvp(node: dict[str, Any], doc: dict[str, Any]) -> tuple[dict, dict, s
 
 
 def _parse_linked_art(node: dict[str, Any]) -> tuple[dict, dict, str | None, list[str]]:
-    """Linked.Art shape. Languages are AAT URIs mapped via LANG_URI."""
+    """Linked.Art shape. Language codes via _resolve_lang; the 'qualified'
+    parenthetical forms in each Name's `alternative` are harvested too (they are
+    Getty's disambiguated descriptors and were previously dropped)."""
     pref: dict[str, str] = {}
     alt: dict[str, list[str]] = {}
-    # AAT classification URIs for preferred vs alternate term (suffix match).
-    PREF_TYPES = {"300404670"}  # "preferred terms"
+    PREF_TYPES = {"300404670"}  # AAT "preferred terms" classification
     for name in _as_list(node.get("identified_by")):
         if not isinstance(name, dict) or name.get("type") != "Name":
             continue
-        content = name.get("content")
-        if not content:
-            continue
-        langs_present = [l for l in _as_list(name.get("language")) if isinstance(l, dict)]
-        lang_codes = [LANG_URI.get(_clean_id(l.get("id", ""))) for l in langs_present]
-        mapped = next((c for c in lang_codes if c), None)
-        if mapped:
-            lang = mapped
-        elif not langs_present:
-            # Getty leaves the English form's Name untagged (the basis for the
-            # _label English backfill below); treat any untagged Name as English.
-            lang = "en"
-        else:
-            lang = "und"   # carries a language URI we don't map (e.g. French)
+        parent_lang = _resolve_lang(name) or ("en" if not name.get("language") else "und")
         is_pref = any(
             _clean_id(c.get("id", "")) in PREF_TYPES
             for c in _as_list(name.get("classified_as")) if isinstance(c, dict)
         )
-        if is_pref and lang not in pref:
-            pref[lang] = content
-        else:
-            alt.setdefault(lang, []).append(content)
+        # The qualified (alternative) form is the better display, so list those
+        # first; the base content follows and is kept as an altLabel for matching.
+        forms: list[tuple[str, str]] = []
+        for a in _as_list(name.get("alternative")):
+            if isinstance(a, dict) and a.get("content"):
+                forms.append((_resolve_lang(a) or parent_lang, a["content"]))
+        if name.get("content"):
+            forms.append((parent_lang, name["content"]))
+        for lang, content in forms:
+            if is_pref and lang not in pref:
+                pref[lang] = content
+            elif pref.get(lang) != content and content not in alt.setdefault(lang, []):
+                alt[lang].append(content)
 
     scope = None
     for ref in _as_list(node.get("referred_to_by")):

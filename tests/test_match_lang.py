@@ -155,3 +155,35 @@ def test_untagged_name_is_english_tagged_unmapped_is_und():
     assert pref.get("en") == "registrations (licenses)"
     assert pref.get("und") == "agrément"           # tagged foreign stays und
     assert "licences" in alt.get("en", [])         # untagged altLabel -> en
+
+
+def test_matched_lang_on_real_getty_language_uris():
+    # End-to-end of the 300027760 fix: an English query coincides with the French
+    # altLabel -> matched_lang 'fr' (gated by match_langs); an English altLabel
+    # query -> matched_lang 'en' (no longer 'und').
+    from museumvocab_reconcile.adapters.aat import _parse_linked_art, AatAdapter
+    node = {"type": "Type", "identified_by": [
+        {"type": "Name", "content": "registrations",
+         "language": [{"id": "http://vocab.getty.edu/language/en"}],
+         "alternative": [{"type": "Name", "content": "registrations (licenses)",
+                          "language": [{"id": "http://vocab.getty.edu/language/en"}]}],
+         "classified_as": [{"id": "http://vocab.getty.edu/aat/300404670"}]},
+        {"type": "Name", "content": "agrément",
+         "language": [{"id": "http://vocab.getty.edu/language/fr"}],
+         "classified_as": [{"id": "http://vocab.getty.edu/term/type/AlternateDescriptor"}]},
+        {"type": "Name", "content": "registration",
+         "language": [{"id": "http://vocab.getty.edu/language/en"}],
+         "alternative": [{"type": "Name", "content": "registration (license)",
+                          "language": [{"id": "http://vocab.getty.edu/language/en"}]}]},
+    ]}
+    pref, alt, *_ = _parse_linked_art(node)
+    rec = {"pref_labels": pref, "alt_labels": alt}
+    a = AatAdapter(cache=None)
+
+    fr = make_candidate(matched_lang="en", is_exact=False, query_term="agrément")
+    a._refine_match(fr, rec)
+    assert (fr.matched_lang, fr.is_exact) == ("fr", True)
+
+    en = make_candidate(matched_lang="en", is_exact=False, query_term="registration (license)")
+    a._refine_match(en, rec)
+    assert (en.matched_lang, en.is_exact) == ("en", True)

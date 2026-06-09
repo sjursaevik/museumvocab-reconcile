@@ -1,0 +1,657 @@
+diff --git a/museumvocab_reconcile/cli.py b/museumvocab_reconcile/cli.py
+index 5e1cb9e..19f5fa3 100644
+--- a/museumvocab_reconcile/cli.py
++++ b/museumvocab_reconcile/cli.py
+@@ -309,6 +309,7 @@ def _classified_to_dict(ct: ClassifiedTerm) -> dict:
+         "reasons": ct.reasons,
+         "proposed_facet": ct.proposed_facet,
+         "proposed_aat_facet": ct.proposed_aat_facet,
++        "proposed_hierarchy": ct.proposed_hierarchy,
+         "proposed_target_term": ct.proposed_target_term,
+     }
+ 
+@@ -320,6 +321,7 @@ def _dict_to_classified(d: dict) -> ClassifiedTerm:
+         term=SourceTerm(**d["term"]), candidates=cands, best=best,
+         tier=d["tier"], reasons=d["reasons"], proposed_facet=d.get("proposed_facet"),
+         proposed_aat_facet=d.get("proposed_aat_facet"),
++        proposed_hierarchy=d.get("proposed_hierarchy"),
+         proposed_target_term=d.get("proposed_target_term"),
+     )
+ 
+diff --git a/museumvocab_reconcile/config.py b/museumvocab_reconcile/config.py
+index a613b15..f66deeb 100644
+--- a/museumvocab_reconcile/config.py
++++ b/museumvocab_reconcile/config.py
+@@ -32,6 +32,13 @@ except ImportError as exc:  # pragma: no cover - dependency hint
+ 
+ VALID_AUTO_ACCEPT_MODES = {"full", "exact_only", "off"}
+ 
++# How `facets.preferred_hierarchies` influences candidate selection.
++#   prefer - among accepted-facet candidates, favour one that also sits in a
++#            preferred sub-hierarchy (ranking signal, finer than the facet).
++#   off    - ignore preferred_hierarchies entirely.
++# `boost` / `require` are reserved for later and intentionally not yet accepted.
++VALID_HIERARCHY_MODES = {"prefer", "off"}
++
+ 
+ @dataclass
+ class LanguageConfig:
+@@ -58,12 +65,35 @@ class LanguageConfig:
+ 
+ @dataclass
+ class FacetConfig:
+-    preferred: str | None = None       # influences tiering/ranking, never hard-filters
++    preferred: str | None = None       # legacy single-facet hint; superseded for
++                                       # ranking by preferred_hierarchies (kept for
++                                       # backward compat; not consumed by tiering).
+     accept_all: bool = False           # accept any returned facet (ignores `accepted`)
+     accepted: list[str] = field(default_factory=list)
++    # Fine-grained preference WITHIN accepted facets: AAT anchor id -> human label.
++    # A candidate is "in" a preferred hierarchy if an anchor id is its own id or
++    # appears in its ancestor chain. Used by tiering to pick which candidate to
++    # propose (see hierarchy_mode); it never widens or narrows the accept gate.
++    # Discover good anchors with `python tools/profile_hierarchies.py`.
++    preferred_hierarchies: dict[str, str] = field(default_factory=dict)
++    hierarchy_mode: str = "prefer"     # see VALID_HIERARCHY_MODES
+     # facet -> {"target": "production"|"object"|..., "prop": "classified_as"|"made_of"|...}
+     linked_art_property: dict[str, dict[str, str]] = field(default_factory=dict)
+ 
++    def __post_init__(self) -> None:
++        if self.hierarchy_mode not in VALID_HIERARCHY_MODES:
++            raise ValueError(
++                f"facets.hierarchy_mode must be one of {sorted(VALID_HIERARCHY_MODES)}, "
++                f"got {self.hierarchy_mode!r}"
++            )
++        # AAT ids are numeric strings; YAML parses an unquoted `300264551:` key as
++        # an int, which would silently never match the (string) ancestor ids.
++        # Coerce keys to str so quoting in the profile is optional.
++        if self.preferred_hierarchies:
++            self.preferred_hierarchies = {
++                str(k): v for k, v in self.preferred_hierarchies.items()
++            }
++
+     def is_accepted(self, facet: str | None) -> bool:
+         if self.accept_all:
+             return True
+@@ -71,6 +101,20 @@ class FacetConfig:
+             return False
+         return facet in self.accepted
+ 
++    def hierarchy_hit(self, candidate: Any) -> str | None:
++        """The most specific preferred-hierarchy anchor this candidate sits under,
++        or None. Membership = an anchor id equals the candidate's own id or appears
++        in its ancestor chain (the preferred-parent climb stored on the Candidate).
++        The chain is narrow->broad, so the first anchor hit is the most specific."""
++        if not self.preferred_hierarchies:
++            return None
++        chain = [candidate.concept_id]
++        chain += [a.get("id") for a in (getattr(candidate, "ancestors", None) or [])]
++        for cid in chain:
++            if cid in self.preferred_hierarchies:
++                return cid
++        return None
++
+ 
+ @dataclass
+ class AutoAcceptConfig:
+@@ -194,6 +238,11 @@ class Profile:
+                 "auto_accept.mode is 'exact_only' but trusted_exact_match_langs is "
+                 "empty: nothing can auto-accept, equivalent to mode 'off'."
+             )
++        if self.facets.preferred_hierarchies and self.facets.hierarchy_mode == "off":
++            warnings.append(
++                "facets.preferred_hierarchies is set but facets.hierarchy_mode is "
++                "'off': the anchors will be ignored."
++            )
+         return warnings
+ 
+ 
+diff --git a/museumvocab_reconcile/model.py b/museumvocab_reconcile/model.py
+index 7386302..43f4d0b 100644
+--- a/museumvocab_reconcile/model.py
++++ b/museumvocab_reconcile/model.py
+@@ -66,6 +66,7 @@ class ClassifiedTerm:
+     reasons: list[str]           # human-readable explanation of the tier decision
+     proposed_facet: str | None
+     proposed_aat_facet: str | None = None    # live AAT facet "<name> (<id>)" of the best candidate
++    proposed_hierarchy: str | None = None    # preferred sub-hierarchy "<label> (<id>)" the best sits in
+     proposed_target_term: str | None = None  # proposed English/target label
+ 
+ 
+diff --git a/museumvocab_reconcile/profiles/objectnames.aat.yaml b/museumvocab_reconcile/profiles/objectnames.aat.yaml
+index aad06b8..d05c2ea 100644
+--- a/museumvocab_reconcile/profiles/objectnames.aat.yaml
++++ b/museumvocab_reconcile/profiles/objectnames.aat.yaml
+@@ -14,6 +14,12 @@ facets:
+   preferred: work_types        # influences tiering/ranking; never hard-filters
+   accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
+   accepted: [materials, formats, work_types, techniques]
++  hierarchy_mode: prefer       # prefer | off — `prefer` favours candidates in a
++                               # preferred sub-hierarchy when picking the proposal
++  preferred_hierarchies: {}    # AAT anchor id -> label; refines candidate selection
++                               # WITHIN accepted facets (never changes the gate).
++                               # Fill from: python tools/profile_hierarchies.py 02_candidates.json --emit-yaml
++                               # then confirm ids with: python tools/verify_facets.py <id> ...
+   linked_art_property:
+     techniques:   {target: production, prop: classified_as}
+     work_types:   {target: object,     prop: classified_as}
+diff --git a/museumvocab_reconcile/profiles/techniques.aat.yaml b/museumvocab_reconcile/profiles/techniques.aat.yaml
+index 6de50b7..e5d6d36 100644
+--- a/museumvocab_reconcile/profiles/techniques.aat.yaml
++++ b/museumvocab_reconcile/profiles/techniques.aat.yaml
+@@ -15,6 +15,12 @@ facets:
+   preferred: techniques        # influences tiering/ranking; never hard-filters
+   accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
+   accepted: [techniques, work_types, materials, formats, design_motifs]
++  hierarchy_mode: prefer       # prefer | off — `prefer` favours candidates in a
++                               # preferred sub-hierarchy when picking the proposal
++  preferred_hierarchies: {}    # AAT anchor id -> label; refines candidate selection
++                               # WITHIN accepted facets (never changes the gate).
++                               # Fill from: python tools/profile_hierarchies.py 02_candidates.json --emit-yaml
++                               # then confirm ids with: python tools/verify_facets.py <id> ...
+   linked_art_property:
+     techniques:   {target: production, prop: classified_as}
+     work_types:   {target: object,     prop: classified_as}
+diff --git a/museumvocab_reconcile/review.py b/museumvocab_reconcile/review.py
+index 94a13ac..b1588f6 100644
+--- a/museumvocab_reconcile/review.py
++++ b/museumvocab_reconcile/review.py
+@@ -20,7 +20,7 @@ from .model import ClassifiedTerm, Decision
+ COLUMNS = [
+     "id", "tier",                       # context (machine output)
+     "source_term", "parents", "english_term", "english_source",  # context
+-    "proposed_id", "proposed_uri", "proposed_facet", "proposed_aat_facet", "proposed_target_term",
++    "proposed_id", "proposed_uri", "proposed_facet", "proposed_aat_facet", "proposed_hierarchy", "proposed_target_term",
+     "matched_term", "matched_lang",    # the AAT label that matched the query (+ its language)
+     "best_score", "reasons",            # context
+     # ---- editable by the reviewer ----
+@@ -60,6 +60,7 @@ def export_review_csv(
+                     "proposed_uri": best.uri if best else "",
+                     "proposed_facet": ct.proposed_facet or "",
+                     "proposed_aat_facet": ct.proposed_aat_facet or "",
++                    "proposed_hierarchy": ct.proposed_hierarchy or "",
+                     "proposed_target_term": ct.proposed_target_term or "",
+                     "matched_term": best.matched_label if best else "",
+                     "matched_lang": best.matched_lang if best else "",
+diff --git a/museumvocab_reconcile/tiering.py b/museumvocab_reconcile/tiering.py
+index dbf31f2..90de50f 100644
+--- a/museumvocab_reconcile/tiering.py
++++ b/museumvocab_reconcile/tiering.py
+@@ -55,6 +55,24 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
+     # review below, never auto-accepted.
+     accepted_cands = [c for c in ranked if facets.is_accepted(c.facet)]
+     best = accepted_cands[0] if accepted_cands else ranked[0]
++    # `prefer` mode: a facet is too coarse to rank, so among accepted candidates
++    # favour one that also sits in a preferred sub-hierarchy. This steers WHICH
++    # candidate is proposed; the accepted-facet gate is unchanged. Two guards keep
++    # it safe: (1) never demote a trusted-language exact top pick — that signal is
++    # sacrosanct (see skill: nb/nn exact ≈ certain); (2) accepted_cands keeps score
++    # order, so in_hier[0] is the strongest in-hierarchy candidate. If steering
++    # picks a lower-scored candidate the gap below shrinks accordingly, so an
++    # uncertain result routes to review rather than auto-accepting an
++    # out-of-hierarchy rival — the conservative direction.
++    if (
++        facets.hierarchy_mode == "prefer"
++        and facets.preferred_hierarchies
++        and accepted_cands
++        and not _trusted_exact(accepted_cands[0], profile)
++    ):
++        in_hier = [c for c in accepted_cands if facets.hierarchy_hit(c)]
++        if in_hier:
++            best = in_hier[0]
+     # Gap is measured from `best` to its nearest rival of ANY facet, so a higher-
+     # scoring non-accepted rival shrinks (or negates) the gap and blocks auto-accept.
+     rival_scores = [c.score for c in ranked if c is not best]
+@@ -100,11 +118,22 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
+     if review_if.broader_only and best.facet and not exact and best.score < aa.min_score:
+         reasons.append("possible broader-only match — verify specificity")
+ 
++    # Surface the preferred sub-hierarchy the proposed candidate sits in (advisory;
++    # appended after the tier decision so it never forces a review).
++    hier_anchor = facets.hierarchy_hit(best)
++    proposed_hierarchy = (
++        f"{facets.preferred_hierarchies[hier_anchor]} ({hier_anchor})"
++        if hier_anchor else None
++    )
++    if proposed_hierarchy:
++        reasons.append(f"in preferred hierarchy {proposed_hierarchy}")
++
+     proposed_target = best.pref_label_target or (
+         term.main_target_term if term.main_target_term else None
+     )
+     return ClassifiedTerm(
+         term=term, candidates=ranked, best=best, tier=tier, reasons=reasons,
+         proposed_facet=best.facet, proposed_aat_facet=best.aat_facet,
++        proposed_hierarchy=proposed_hierarchy,
+         proposed_target_term=proposed_target,
+     )
+diff --git a/tests/conftest.py b/tests/conftest.py
+index a410999..f6fe7b1 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -65,6 +65,7 @@ def make_candidate(
+     facet: str | None = "work_types",
+     pref_label_target: str | None = "thing",
+     aat_facet: str | None = None,
++    ancestors: list[dict[str, Any]] | None = None,
+ ) -> Candidate:
+     return Candidate(
+         authority="aat",
+@@ -78,6 +79,7 @@ def make_candidate(
+         facet=facet,
+         aat_facet=aat_facet,
+         pref_label_target=pref_label_target,
++        ancestors=ancestors or [],
+     )
+ 
+ 
+diff --git a/tests/test_tiering.py b/tests/test_tiering.py
+index 5c1aaf2..b575de6 100644
+--- a/tests/test_tiering.py
++++ b/tests/test_tiering.py
+@@ -115,3 +115,106 @@ def test_accept_all_lets_any_facet_through():
+     out = classify(make_term(), [cand], profile)
+     assert out.tier == "auto_accept"
+     assert out.proposed_facet == "anything_at_all"
++
++
++# --------------------------------------------------------------------------
++# preferred_hierarchies (hierarchy_mode: prefer) — finer-grained than the facet
++# --------------------------------------------------------------------------
++
++def _anc(*ids):
++    return [{"id": i, "label": i} for i in ids]
++
++
++def _prefer_profile(anchors):
++    return make_profile({"facets": {"preferred_hierarchies": anchors}})  # mode defaults to "prefer"
++
++
++def test_prefer_steers_to_in_hierarchy_candidate_over_higher_score():
++    # Without anchors, the score-40 out-of-hierarchy candidate would auto-accept.
++    # With H anchored, the score-30 in-hierarchy candidate is proposed instead, and
++    # the shrunken gap correctly routes the now-uncertain result to review.
++    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
++                         facet="work_types", ancestors=_anc("300999000", "300264092"))
++    inh = make_candidate(concept_id="B", score=30, is_exact=False, matched_lang="en",
++                         facet="work_types", ancestors=_anc("300264551", "300264092"))
++    prof = _prefer_profile({"300264551": "Furnishings and Equipment"})
++    out = classify(make_term(), [top, inh], prof)
++    assert out.best.concept_id == "B"
++    assert out.proposed_hierarchy == "Furnishings and Equipment (300264551)"
++    assert out.tier == "review"
++    assert any("preferred hierarchy" in r for r in out.reasons)
++
++
++def test_prefer_never_demotes_a_trusted_exact_top_pick():
++    # nb-exact top pick sits OUTSIDE the preferred hierarchy; it must still win and
++    # auto-accept — the trusted-exact signal is sacrosanct.
++    top = make_candidate(concept_id="A", score=40, is_exact=True, matched_lang="nb",
++                         facet="work_types", ancestors=_anc("300999000", "300264092"))
++    inh = make_candidate(concept_id="B", score=30, is_exact=False, matched_lang="en",
++                         facet="work_types", ancestors=_anc("300264551", "300264092"))
++    prof = _prefer_profile({"300264551": "Furnishings and Equipment"})
++    out = classify(make_term(), [top, inh], prof)
++    assert out.best.concept_id == "A"
++    assert out.tier == "auto_accept"
++    assert out.proposed_hierarchy is None
++
++
++def test_prefer_keeps_in_hierarchy_winner_and_surfaces_it():
++    # Top accepted candidate is already in the preferred hierarchy: unchanged pick,
++    # auto-accepts on the score gap, and the hierarchy is surfaced.
++    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
++                         facet="work_types", ancestors=_anc("300264551", "300264092"))
++    rival = make_candidate(concept_id="B", score=30, facet="work_types",
++                          ancestors=_anc("300999000", "300264092"))
++    prof = _prefer_profile({"300264551": "Furnishings and Equipment"})
++    out = classify(make_term(), [top, rival], prof)
++    assert out.best.concept_id == "A"
++    assert out.tier == "auto_accept"
++    assert out.proposed_hierarchy == "Furnishings and Equipment (300264551)"
++
++
++def test_empty_preferred_hierarchies_is_a_no_op():
++    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
++                         facet="work_types", ancestors=_anc("300999000", "300264092"))
++    inh = make_candidate(concept_id="B", score=30, facet="work_types",
++                        ancestors=_anc("300264551", "300264092"))
++    out = classify(make_term(), [top, inh], make_profile())  # no anchors
++    assert out.best.concept_id == "A"
++    assert out.proposed_hierarchy is None
++
++
++def test_hierarchy_mode_off_ignores_anchors():
++    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
++                         facet="work_types", ancestors=_anc("300999000", "300264092"))
++    inh = make_candidate(concept_id="B", score=30, facet="work_types",
++                        ancestors=_anc("300264551", "300264092"))
++    prof = make_profile({"facets": {"hierarchy_mode": "off",
++                                    "preferred_hierarchies": {"300264551": "x"}}})
++    out = classify(make_term(), [top, inh], prof)
++    assert out.best.concept_id == "A"
++    assert out.proposed_hierarchy is None
++
++
++def test_unquoted_numeric_anchor_keys_are_coerced_and_match():
++    # YAML parses an unquoted `300264551:` key as an int; it must still match the
++    # (string) ancestor ids rather than silently missing.
++    inh = make_candidate(concept_id="B", score=30, is_exact=False, matched_lang="en",
++                         facet="work_types", ancestors=_anc("300264551", "300264092"))
++    prof = make_profile({"facets": {"preferred_hierarchies": {300264551: "Furnishings"}}})
++    out = classify(make_term(), [inh], prof)
++    assert out.proposed_hierarchy == "Furnishings (300264551)"
++
++
++def test_anchor_matching_concept_id_itself_counts():
++    cand = make_candidate(concept_id="300264551", score=30, is_exact=False,
++                          matched_lang="en", facet="work_types",
++                          ancestors=_anc("300264092"))
++    prof = _prefer_profile({"300264551": "Furnishings"})
++    out = classify(make_term(), [cand], prof)
++    assert out.proposed_hierarchy == "Furnishings (300264551)"
++
++
++def test_invalid_hierarchy_mode_raises():
++    import pytest
++    with pytest.raises(ValueError, match="hierarchy_mode"):
++        make_profile({"facets": {"hierarchy_mode": "boost"}})
+diff --git a/tools/profile_hierarchies.py b/tools/profile_hierarchies.py
+new file mode 100644
+index 0000000..1d24c8e
+--- /dev/null
++++ b/tools/profile_hierarchies.py
+@@ -0,0 +1,293 @@
++r"""Show which AAT *hierarchies* your reconciled terms actually land in.
++
++Why this exists
++---------------
++`facets.accepted` gates auto-accept, but a facet (Objects, Materials, ...) is too
++coarse to *rank* candidates: many unrelated terms share one facet. The planned
++`facets.preferred_hierarchies` knob (mode ``prefer``) refines candidate selection
++by anchoring on AAT *sub-hierarchies* — guide-term nodes a level or two below the
++facet. This tool tells you, empirically, which sub-hierarchies your own vocabulary
++falls into, so you choose anchors from real data instead of guessing.
++
++It is the offline counterpart of `verify_facets.py`: where that one resolves a few
++ids against live Getty, this one reads an existing pipeline artifact and needs no
++network. Every enriched candidate already carries its `ancestors` chain (the
++preferred-parent climb, facet node last) and `aat_facet`, so the just-below-facet
++node is read straight off the JSON.
++
++What it reads
++-------------
++`02_candidates.json` (from `lookup`) or `03_classified.json` (from `classify`).
++Both serialise each candidate as ``asdict(Candidate)`` including ``ancestors`` and
++``aat_facet``; the classified file additionally has ``best_id``/``tier``.
++
++What it does
++------------
++For each in-scope candidate it locates the facet node in the ancestor chain and
++reports the node sitting ``--depth-below-facet`` levels under it (depth 1 = the top
++sub-hierarchy; larger = finer). It tallies these per facet, counting how many
++distinct source terms each sub-hierarchy would cover, with example terms, and can
++emit a paste-ready ``preferred_hierarchies:`` block.
++
++Scopes (``--scope``):
++  * ``accepted`` (default) — only candidates whose facet is in the accepted set.
++    This mirrors how `preferred_hierarchies` will be applied (facet is the gate),
++    so it is the distribution that actually matters for picking anchors.
++  * ``best`` — only the candidate the classifier proposed per term (classified
++    file: its ``best_id``; candidates file: strongest accepted-facet, else top).
++  * ``all``  — every enriched candidate (noisiest).
++
++Usage (PowerShell, from the repo root)::
++
++    python tools\profile_hierarchies.py 02_candidates.json
++    python tools\profile_hierarchies.py 03_classified.json --scope best
++    python tools\profile_hierarchies.py 02_candidates.json --profile museumvocab_reconcile\profiles\techniques.aat.yaml
++    python tools\profile_hierarchies.py 02_candidates.json --depth-below-facet 2 --min-count 3
++    python tools\profile_hierarchies.py 02_candidates.json --emit-yaml --min-count 3
++
++NOTE: do NOT add ``preferred_hierarchies:`` to a live profile yet — ``FacetConfig``
++does not accept the key, so it would break profile loading until that field lands.
++This tool reads profiles leniently (raw YAML) precisely so it works in the meantime.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import re
++import sys
++from collections import defaultdict
++from pathlib import Path
++from typing import Any
++
++# Default accepted facets (mirrors the profile `accepted` set). Overridden by
++# --profile when supplied.
++DEFAULT_ACCEPTED = {"techniques", "work_types", "materials", "formats", "design_motifs"}
++
++_FACET_ID_RE = re.compile(r"\((\d+)\)\s*$")  # "Objects Facet (300264092)" -> 300264092
++
++# Synthetic bucket keys for candidates whose just-below-facet node can't be read.
++_UNRESOLVED = ("(facet unresolved — climb capped/errored)", None)
++_DIRECT = ("(directly under facet — no sub-hierarchy)", None)
++_NO_ANC = ("(no ancestors — candidate not enriched)", None)
++
++
++def _facet_id_name(aat_facet: str | None) -> tuple[str | None, str | None]:
++    """Split ``"Objects Facet (300264092)"`` into (id, name). Tolerates a bare id."""
++    if not aat_facet:
++        return None, None
++    m = _FACET_ID_RE.search(aat_facet)
++    if m:
++        return m.group(1), aat_facet[: m.start()].strip()
++    if aat_facet.isdigit():
++        return aat_facet, None
++    return None, aat_facet
++
++
++def _below_facet(cand: dict, depth: int) -> tuple[str, str | None, str | None]:
++    """Return (hierarchy_label, hierarchy_id, hierarchy_label_for_yaml) for the node
++    sitting ``depth`` levels below the facet in this candidate's ancestor chain.
++
++    Falls back to synthetic buckets when the chain can't place a node there.
++    Ancestors are climb order (narrow->broad); the facet node is last when the
++    climb resolved (``aat_facet`` is present).
++    """
++    ancestors: list[dict[str, Any]] = cand.get("ancestors") or []
++    if not ancestors:
++        return _NO_ANC[0], _NO_ANC[1], None
++
++    ids = [a.get("id") for a in ancestors]
++    facet_id, _ = _facet_id_name(cand.get("aat_facet"))
++
++    if facet_id and facet_id in ids:
++        fidx = ids.index(facet_id)
++    elif cand.get("aat_facet"):
++        fidx = len(ids) - 1          # resolved but id not matched: trust last-is-facet
++    else:
++        return _UNRESOLVED[0], _UNRESOLVED[1], None
++
++    if fidx == 0:                     # facet is the immediate parent: nothing below it
++        return _DIRECT[0], _DIRECT[1], None
++
++    target = fidx - depth
++    shallow = target < 0
++    if shallow:
++        target = 0                    # deepest-below-facet node this chain offers
++
++    node = ancestors[target]
++    hid = node.get("id")
++    label = node.get("label") or ""
++    shown = f"{label} ({hid})" if label else str(hid)
++    if shallow:
++        shown += f"  [shallow: only {fidx} level(s) below facet]"
++    return shown, hid, (label or None)
++
++
++def _load_accepted_and_anchored(profile_path: str | None) -> tuple[set[str], dict[str, str]]:
++    """From a profile YAML (read leniently): the accepted facet set and any already
++    declared preferred_hierarchies (id -> label). Empty/default if not supplied."""
++    if not profile_path:
++        return set(DEFAULT_ACCEPTED), {}
++    try:
++        import yaml  # pyyaml is already a project dependency (profiles are YAML)
++    except ImportError:
++        print("  (note: PyYAML not importable; --profile ignored)", file=sys.stderr)
++        return set(DEFAULT_ACCEPTED), {}
++    data = yaml.safe_load(Path(profile_path).read_text("utf-8")) or {}
++    facets = data.get("facets", {}) or {}
++    accepted = set(facets.get("accepted", []) or DEFAULT_ACCEPTED)
++    if facets.get("accept_all"):
++        accepted = set()  # sentinel: empty means "accept everything" below
++    anchored = dict(facets.get("preferred_hierarchies", {}) or {})
++    return accepted, {str(k): v for k, v in anchored.items()}
++
++
++def _select(entry: dict, scope: str, accepted: set[str]) -> list[dict]:
++    """Pick the in-scope candidates from one term entry."""
++    cands: list[dict] = entry.get("candidates") or []
++    if not cands:
++        return []
++
++    def is_accepted(c: dict) -> bool:
++        return not accepted or (c.get("facet") in accepted)  # empty set == accept_all
++
++    if scope == "all":
++        return cands
++    if scope == "accepted":
++        return [c for c in cands if is_accepted(c)]
++    if scope == "best":
++        best_id = entry.get("best_id")
++        if best_id:  # classified file
++            return [c for c in cands if c.get("concept_id") == best_id]
++        # candidates file: reproduce classify()'s pick — strongest accepted, else top
++        ranked = sorted(cands, key=lambda c: c.get("score") or 0.0, reverse=True)
++        acc = [c for c in ranked if is_accepted(c)]
++        return [acc[0]] if acc else [ranked[0]]
++    raise ValueError(f"unknown scope {scope!r}")
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(
++        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
++    )
++    ap.add_argument("input", nargs="?", default="02_candidates.json",
++                    help="02_candidates.json or 03_classified.json (default: 02_candidates.json)")
++    ap.add_argument("--profile", default=None,
++                    help="profile YAML: read accepted facets + already-anchored hierarchies")
++    ap.add_argument("--scope", choices=["accepted", "best", "all"], default="accepted",
++                    help="which candidates to tally (default: accepted)")
++    ap.add_argument("--depth-below-facet", type=int, default=1, metavar="N",
++                    help="node N levels below the facet to tally (1=top sub-hierarchy; larger=finer)")
++    ap.add_argument("--top", type=int, default=0, metavar="K",
++                    help="show only the top K hierarchies per facet (0 = all)")
++    ap.add_argument("--examples", type=int, default=3, metavar="M",
++                    help="example source terms to show per hierarchy (default: 3)")
++    ap.add_argument("--min-count", type=int, default=1, metavar="C",
++                    help="hide hierarchies covering fewer than C distinct terms (default: 1)")
++    ap.add_argument("--emit-yaml", action="store_true",
++                    help="print a paste-ready preferred_hierarchies: block instead of the report")
++    args = ap.parse_args()
++
++    if args.depth_below_facet < 1:
++        ap.error("--depth-below-facet must be >= 1")
++
++    accepted, anchored = _load_accepted_and_anchored(args.profile)
++    entries = json.loads(Path(args.input).read_text("utf-8"))
++
++    # facet_name -> hierarchy_key -> stats
++    # hierarchy_key = (shown_label, hierarchy_id, yaml_label)
++    by_facet: dict[str, dict[tuple, dict[str, Any]]] = defaultdict(lambda: defaultdict(
++        lambda: {"terms": set(), "cands": 0, "examples": {}}
++    ))
++    facet_terms: dict[str, set[str]] = defaultdict(set)
++    total_terms_with_cands = 0
++    skipped_errors = 0
++
++    for entry in entries:
++        if entry.get("error"):
++            skipped_errors += 1
++            continue
++        term = entry.get("term", {})
++        tid = term.get("id", "?")
++        src = term.get("main_lang_term") or term.get("label") or tid
++        selected = _select(entry, args.scope, accepted)
++        if not selected:
++            continue
++        total_terms_with_cands += 1
++        for c in selected:
++            _, facet_name = _facet_id_name(c.get("aat_facet"))
++            facet_disp = facet_name or (c.get("facet") or "(no facet)")
++            shown, hid, ylabel = _below_facet(c, args.depth_below_facet)
++            key = (shown, hid, ylabel)
++            stats = by_facet[facet_disp][key]
++            stats["terms"].add(tid)
++            stats["cands"] += 1
++            if tid not in stats["examples"] and len(stats["examples"]) < args.examples:
++                stats["examples"][tid] = f"{src} -> {c.get('matched_label') or '?'}"
++            facet_terms[facet_disp].add(tid)
++
++    # ---- emit-yaml mode -----------------------------------------------------
++    if args.emit_yaml:
++        print("# Paste under `facets:` in the profile (after the FacetConfig field exists).")
++        print("# Derived from", args.input, f"(scope={args.scope}, depth={args.depth_below_facet}).")
++        print("# Real sub-hierarchy nodes only; synthetic buckets and anchorless rows omitted.")
++        print("preferred_hierarchies:")
++        any_row = False
++        for facet_disp in sorted(by_facet, key=lambda f: -len(facet_terms[f])):
++            rows = [
++                (k, s) for k, s in by_facet[facet_disp].items()
++                if k[1] and len(s["terms"]) >= args.min_count   # k[1] is hierarchy id
++            ]
++            rows.sort(key=lambda kv: -len(kv[1]["terms"]))
++            if not rows:
++                continue
++            print(f"  # --- {facet_disp} ---")
++            for (shown, hid, ylabel), s in rows:
++                mark = "  # already anchored" if hid in anchored else ""
++                label = (ylabel or "").replace('"', "'")
++                print(f'  "{hid}": "{label}"   # {len(s["terms"])} terms{mark}')
++                any_row = True
++        if not any_row:
++            print("  {}  # nothing met --min-count; lower it or widen --scope")
++        return 0
++
++    # ---- report mode --------------------------------------------------------
++    print(f"input={args.input}  scope={args.scope}  depth_below_facet={args.depth_below_facet}")
++    print(f"terms with in-scope candidates: {total_terms_with_cands}"
++          + (f"   (skipped {skipped_errors} errored term(s))" if skipped_errors else ""))
++    if args.profile:
++        print(f"accepted facets from profile: {sorted(accepted) or 'ALL (accept_all)'}"
++              + (f"   already-anchored hierarchies: {len(anchored)}" if anchored else ""))
++    print("=" * 100)
++
++    for facet_disp in sorted(by_facet, key=lambda f: -len(facet_terms[f])):
++        denom = len(facet_terms[facet_disp]) or 1
++        print(f"\n{facet_disp}   ({len(facet_terms[facet_disp])} distinct terms)")
++        print(f"  {'terms':>6} {'%':>5} {'cands':>6}  sub-hierarchy (depth "
++              f"{args.depth_below_facet} below facet)")
++        print("  " + "-" * 96)
++        rows = sorted(by_facet[facet_disp].items(), key=lambda kv: -len(kv[1]["terms"]))
++        shown_rows = 0
++        for (shown, hid, _ylabel), s in rows:
++            nterms = len(s["terms"])
++            if nterms < args.min_count:
++                continue
++            if args.top and shown_rows >= args.top:
++                remaining = sum(1 for _, ss in rows[shown_rows:] if len(ss["terms"]) >= args.min_count)
++                if remaining:
++                    print(f"  … {remaining} more sub-hierarchies (raise --top to see)")
++                break
++            mark = "  *anchored*" if hid and hid in anchored else ""
++            pct = 100.0 * nterms / denom
++            print(f"  {nterms:>6} {pct:>4.0f}% {s['cands']:>6}  {shown}{mark}")
++            for ex in s["examples"].values():
++                print(f"           · {ex}")
++            shown_rows += 1
++    print("\n" + "=" * 100)
++    print("Pick anchor ids from the high-coverage rows, confirm them with "
++          "`python tools/verify_facets.py <id> ...`,")
++    print("then re-run with --emit-yaml to get a paste-ready preferred_hierarchies block.")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

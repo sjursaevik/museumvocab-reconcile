@@ -115,3 +115,106 @@ def test_accept_all_lets_any_facet_through():
     out = classify(make_term(), [cand], profile)
     assert out.tier == "auto_accept"
     assert out.proposed_facet == "anything_at_all"
+
+
+# --------------------------------------------------------------------------
+# preferred_hierarchies (hierarchy_mode: prefer) — finer-grained than the facet
+# --------------------------------------------------------------------------
+
+def _anc(*ids):
+    return [{"id": i, "label": i} for i in ids]
+
+
+def _prefer_profile(anchors):
+    return make_profile({"facets": {"preferred_hierarchies": anchors}})  # mode defaults to "prefer"
+
+
+def test_prefer_steers_to_in_hierarchy_candidate_over_higher_score():
+    # Without anchors, the score-40 out-of-hierarchy candidate would auto-accept.
+    # With H anchored, the score-30 in-hierarchy candidate is proposed instead, and
+    # the shrunken gap correctly routes the now-uncertain result to review.
+    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
+                         facet="work_types", ancestors=_anc("300999000", "300264092"))
+    inh = make_candidate(concept_id="B", score=30, is_exact=False, matched_lang="en",
+                         facet="work_types", ancestors=_anc("300264551", "300264092"))
+    prof = _prefer_profile({"300264551": "Furnishings and Equipment"})
+    out = classify(make_term(), [top, inh], prof)
+    assert out.best.concept_id == "B"
+    assert out.proposed_hierarchy == "Furnishings and Equipment (300264551)"
+    assert out.tier == "review"
+    assert any("preferred hierarchy" in r for r in out.reasons)
+
+
+def test_prefer_never_demotes_a_trusted_exact_top_pick():
+    # nb-exact top pick sits OUTSIDE the preferred hierarchy; it must still win and
+    # auto-accept — the trusted-exact signal is sacrosanct.
+    top = make_candidate(concept_id="A", score=40, is_exact=True, matched_lang="nb",
+                         facet="work_types", ancestors=_anc("300999000", "300264092"))
+    inh = make_candidate(concept_id="B", score=30, is_exact=False, matched_lang="en",
+                         facet="work_types", ancestors=_anc("300264551", "300264092"))
+    prof = _prefer_profile({"300264551": "Furnishings and Equipment"})
+    out = classify(make_term(), [top, inh], prof)
+    assert out.best.concept_id == "A"
+    assert out.tier == "auto_accept"
+    assert out.proposed_hierarchy is None
+
+
+def test_prefer_keeps_in_hierarchy_winner_and_surfaces_it():
+    # Top accepted candidate is already in the preferred hierarchy: unchanged pick,
+    # auto-accepts on the score gap, and the hierarchy is surfaced.
+    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
+                         facet="work_types", ancestors=_anc("300264551", "300264092"))
+    rival = make_candidate(concept_id="B", score=30, facet="work_types",
+                          ancestors=_anc("300999000", "300264092"))
+    prof = _prefer_profile({"300264551": "Furnishings and Equipment"})
+    out = classify(make_term(), [top, rival], prof)
+    assert out.best.concept_id == "A"
+    assert out.tier == "auto_accept"
+    assert out.proposed_hierarchy == "Furnishings and Equipment (300264551)"
+
+
+def test_empty_preferred_hierarchies_is_a_no_op():
+    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
+                         facet="work_types", ancestors=_anc("300999000", "300264092"))
+    inh = make_candidate(concept_id="B", score=30, facet="work_types",
+                        ancestors=_anc("300264551", "300264092"))
+    out = classify(make_term(), [top, inh], make_profile())  # no anchors
+    assert out.best.concept_id == "A"
+    assert out.proposed_hierarchy is None
+
+
+def test_hierarchy_mode_off_ignores_anchors():
+    top = make_candidate(concept_id="A", score=40, is_exact=False, matched_lang="en",
+                         facet="work_types", ancestors=_anc("300999000", "300264092"))
+    inh = make_candidate(concept_id="B", score=30, facet="work_types",
+                        ancestors=_anc("300264551", "300264092"))
+    prof = make_profile({"facets": {"hierarchy_mode": "off",
+                                    "preferred_hierarchies": {"300264551": "x"}}})
+    out = classify(make_term(), [top, inh], prof)
+    assert out.best.concept_id == "A"
+    assert out.proposed_hierarchy is None
+
+
+def test_unquoted_numeric_anchor_keys_are_coerced_and_match():
+    # YAML parses an unquoted `300264551:` key as an int; it must still match the
+    # (string) ancestor ids rather than silently missing.
+    inh = make_candidate(concept_id="B", score=30, is_exact=False, matched_lang="en",
+                         facet="work_types", ancestors=_anc("300264551", "300264092"))
+    prof = make_profile({"facets": {"preferred_hierarchies": {300264551: "Furnishings"}}})
+    out = classify(make_term(), [inh], prof)
+    assert out.proposed_hierarchy == "Furnishings (300264551)"
+
+
+def test_anchor_matching_concept_id_itself_counts():
+    cand = make_candidate(concept_id="300264551", score=30, is_exact=False,
+                          matched_lang="en", facet="work_types",
+                          ancestors=_anc("300264092"))
+    prof = _prefer_profile({"300264551": "Furnishings"})
+    out = classify(make_term(), [cand], prof)
+    assert out.proposed_hierarchy == "Furnishings (300264551)"
+
+
+def test_invalid_hierarchy_mode_raises():
+    import pytest
+    with pytest.raises(ValueError, match="hierarchy_mode"):
+        make_profile({"facets": {"hierarchy_mode": "boost"}})

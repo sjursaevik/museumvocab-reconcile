@@ -32,6 +32,13 @@ except ImportError as exc:  # pragma: no cover - dependency hint
 
 VALID_AUTO_ACCEPT_MODES = {"full", "exact_only", "off"}
 
+# How `facets.preferred_hierarchies` influences candidate selection.
+#   prefer - among accepted-facet candidates, favour one that also sits in a
+#            preferred sub-hierarchy (ranking signal, finer than the facet).
+#   off    - ignore preferred_hierarchies entirely.
+# `boost` / `require` are reserved for later and intentionally not yet accepted.
+VALID_HIERARCHY_MODES = {"prefer", "off"}
+
 
 @dataclass
 class LanguageConfig:
@@ -58,11 +65,34 @@ class LanguageConfig:
 
 @dataclass
 class FacetConfig:
-    preferred: str | None = None       # influences tiering/ranking, never hard-filters
+    preferred: str | None = None       # legacy single-facet hint; superseded for
+                                       # ranking by preferred_hierarchies (kept for
+                                       # backward compat; not consumed by tiering).
     accept_all: bool = False           # accept any returned facet (ignores `accepted`)
     accepted: list[str] = field(default_factory=list)
+    # Fine-grained preference WITHIN accepted facets: AAT anchor id -> human label.
+    # A candidate is "in" a preferred hierarchy if an anchor id is its own id or
+    # appears in its ancestor chain. Used by tiering to pick which candidate to
+    # propose (see hierarchy_mode); it never widens or narrows the accept gate.
+    # Discover good anchors with `python tools/profile_hierarchies.py`.
+    preferred_hierarchies: dict[str, str] = field(default_factory=dict)
+    hierarchy_mode: str = "prefer"     # see VALID_HIERARCHY_MODES
     # facet -> {"target": "production"|"object"|..., "prop": "classified_as"|"made_of"|...}
     linked_art_property: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.hierarchy_mode not in VALID_HIERARCHY_MODES:
+            raise ValueError(
+                f"facets.hierarchy_mode must be one of {sorted(VALID_HIERARCHY_MODES)}, "
+                f"got {self.hierarchy_mode!r}"
+            )
+        # AAT ids are numeric strings; YAML parses an unquoted `300264551:` key as
+        # an int, which would silently never match the (string) ancestor ids.
+        # Coerce keys to str so quoting in the profile is optional.
+        if self.preferred_hierarchies:
+            self.preferred_hierarchies = {
+                str(k): v for k, v in self.preferred_hierarchies.items()
+            }
 
     def is_accepted(self, facet: str | None) -> bool:
         if self.accept_all:
@@ -70,6 +100,20 @@ class FacetConfig:
         if facet is None:
             return False
         return facet in self.accepted
+
+    def hierarchy_hit(self, candidate: Any) -> str | None:
+        """The most specific preferred-hierarchy anchor this candidate sits under,
+        or None. Membership = an anchor id equals the candidate's own id or appears
+        in its ancestor chain (the preferred-parent climb stored on the Candidate).
+        The chain is narrow->broad, so the first anchor hit is the most specific."""
+        if not self.preferred_hierarchies:
+            return None
+        chain = [candidate.concept_id]
+        chain += [a.get("id") for a in (getattr(candidate, "ancestors", None) or [])]
+        for cid in chain:
+            if cid in self.preferred_hierarchies:
+                return cid
+        return None
 
 
 @dataclass
@@ -193,6 +237,11 @@ class Profile:
             warnings.append(
                 "auto_accept.mode is 'exact_only' but trusted_exact_match_langs is "
                 "empty: nothing can auto-accept, equivalent to mode 'off'."
+            )
+        if self.facets.preferred_hierarchies and self.facets.hierarchy_mode == "off":
+            warnings.append(
+                "facets.preferred_hierarchies is set but facets.hierarchy_mode is "
+                "'off': the anchors will be ignored."
             )
         return warnings
 

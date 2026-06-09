@@ -55,6 +55,24 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     # review below, never auto-accepted.
     accepted_cands = [c for c in ranked if facets.is_accepted(c.facet)]
     best = accepted_cands[0] if accepted_cands else ranked[0]
+    # `prefer` mode: a facet is too coarse to rank, so among accepted candidates
+    # favour one that also sits in a preferred sub-hierarchy. This steers WHICH
+    # candidate is proposed; the accepted-facet gate is unchanged. Two guards keep
+    # it safe: (1) never demote a trusted-language exact top pick — that signal is
+    # sacrosanct (see skill: nb/nn exact ≈ certain); (2) accepted_cands keeps score
+    # order, so in_hier[0] is the strongest in-hierarchy candidate. If steering
+    # picks a lower-scored candidate the gap below shrinks accordingly, so an
+    # uncertain result routes to review rather than auto-accepting an
+    # out-of-hierarchy rival — the conservative direction.
+    if (
+        facets.hierarchy_mode == "prefer"
+        and facets.preferred_hierarchies
+        and accepted_cands
+        and not _trusted_exact(accepted_cands[0], profile)
+    ):
+        in_hier = [c for c in accepted_cands if facets.hierarchy_hit(c)]
+        if in_hier:
+            best = in_hier[0]
     # Gap is measured from `best` to its nearest rival of ANY facet, so a higher-
     # scoring non-accepted rival shrinks (or negates) the gap and blocks auto-accept.
     rival_scores = [c.score for c in ranked if c is not best]
@@ -100,11 +118,22 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     if review_if.broader_only and best.facet and not exact and best.score < aa.min_score:
         reasons.append("possible broader-only match — verify specificity")
 
+    # Surface the preferred sub-hierarchy the proposed candidate sits in (advisory;
+    # appended after the tier decision so it never forces a review).
+    hier_anchor = facets.hierarchy_hit(best)
+    proposed_hierarchy = (
+        f"{facets.preferred_hierarchies[hier_anchor]} ({hier_anchor})"
+        if hier_anchor else None
+    )
+    if proposed_hierarchy:
+        reasons.append(f"in preferred hierarchy {proposed_hierarchy}")
+
     proposed_target = best.pref_label_target or (
         term.main_target_term if term.main_target_term else None
     )
     return ClassifiedTerm(
         term=term, candidates=ranked, best=best, tier=tier, reasons=reasons,
         proposed_facet=best.facet, proposed_aat_facet=best.aat_facet,
+        proposed_hierarchy=proposed_hierarchy,
         proposed_target_term=proposed_target,
     )

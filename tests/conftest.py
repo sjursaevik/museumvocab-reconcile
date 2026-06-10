@@ -25,7 +25,6 @@ BASE_PROFILE: dict[str, Any] = {
         "trusted_exact_match_langs": ["nb", "nn"],
     },
     "facets": {
-        "preferred": "work_types",
         "accept_all": False,
         "accepted": ["materials", "formats", "work_types", "techniques"],
     },
@@ -91,6 +90,7 @@ def make_term(
     target_source: str = "source_data",
     target_alternatives: list[str] | None = None,
     expected_facet: str | None = None,
+    expected_hierarchy: str | None = None,
 ) -> SourceTerm:
     return SourceTerm(
         id=term_id,
@@ -105,6 +105,7 @@ def make_term(
         target_source=target_source,
         target_alternatives=target_alternatives or [],
         expected_facet=expected_facet,
+        expected_hierarchy=expected_hierarchy,
     )
 
 

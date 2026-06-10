@@ -75,6 +75,12 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     # picks a lower-scored candidate the gap below shrinks accordingly, so an
     # uncertain result routes to review rather than auto-accepting an
     # out-of-hierarchy rival — the conservative direction.
+    # Resolve the LLM's advisory hierarchy prediction (a cleaned label, possibly
+    # human-edited in the CSV) back to its anchor id; None if it matches no anchor.
+    expected_anchor = (
+        facets.resolve_hierarchy_label(term.expected_hierarchy)
+        if term.expected_hierarchy else None
+    )
     hier_steered = False
     if (
         facets.hierarchy_mode == "prefer"
@@ -84,7 +90,15 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     ):
         in_hier = [c for c in pool if facets.hierarchy_hit(c)]
         if in_hier:
-            best = in_hier[0]
+            # Two-tier preference: the strongest candidate in the LLM-EXPECTED
+            # anchor wins over the strongest in any other anchor; without (or
+            # outside) a prediction, behaviour is unchanged. Advisory only —
+            # the gap-shrink mechanic below still routes uncertainty to review.
+            in_expected = (
+                [c for c in in_hier if facets.in_hierarchy(c, expected_anchor)]
+                if expected_anchor else []
+            )
+            best = (in_expected or in_hier)[0]
             hier_steered = True
     # Advisory expected-facet tie-break (LLM prediction from the translate step):
     # among near-tied pool candidates, prefer one matching the predicted facet.
@@ -193,6 +207,24 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             + ("agrees with proposal" if expected_facet_agrees
                else f"differs from proposed facet {best.facet!r}")
         )
+    # Same advisory annotation for the hierarchy prediction. An edited/stale
+    # label that maps to no profile anchor is reported, not silently dropped.
+    if term.expected_hierarchy:
+        if expected_anchor is None:
+            reasons.append(
+                f"LLM expected hierarchy {term.expected_hierarchy!r} matches no "
+                f"profile anchor — ignored"
+            )
+        elif facets.in_hierarchy(best, expected_anchor):
+            reasons.append(
+                f"LLM expected hierarchy {term.expected_hierarchy!r} agrees with proposal"
+            )
+        else:
+            reasons.append(
+                f"LLM expected hierarchy {term.expected_hierarchy!r} differs from "
+                f"proposal" + (f" (in {proposed_hierarchy})" if proposed_hierarchy else
+                               " (proposal in no preferred hierarchy)")
+            )
 
     proposed_target = best.pref_label_target or (
         term.main_target_term if term.main_target_term else None

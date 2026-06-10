@@ -35,6 +35,12 @@ class SourceTerm:
     # use it to break ties among near-tied cross-facet candidates and to annotate
     # review reasons; it never widens the accept gate or auto-accepts anything.
     expected_facet: str | None = None
+    # LLM-predicted preferred hierarchy, stored as the CLEANED LABEL (one of the
+    # profile's preferred_hierarchies labels; human-editable in the review CSV).
+    # Resolved back to its anchor id at classify time. ADVISORY ONLY: steers
+    # which candidate among preferred-hierarchy hits is proposed and annotates
+    # reasons; never changes the gate, the tier, or a trusted exact pick.
+    expected_hierarchy: str | None = None
 
     @property
     def is_leaf(self) -> bool:

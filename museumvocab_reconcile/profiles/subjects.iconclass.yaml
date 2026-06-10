@@ -13,7 +13,6 @@ languages:
   trusted_exact_match_langs: [en]   # exact match trusted only in English
 
 facets:
-  preferred: null
   accept_all: true             # Iconclass "divisions" are not AAT-style facets; accept all
   accepted: []
   linked_art_property:

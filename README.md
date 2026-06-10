@@ -136,9 +136,25 @@ in the CSV before `translate-apply`):
   `expected_facet` column of `03b_review.csv` — it never changes the
   accept gate, the tier, a trusted nb/nn exact pick, or a
   `preferred_hierarchies` hit.
+- **`expected_hierarchy`** is one level finer: the LLM picks from the profile's
+  `preferred_hierarchies` labels (a closed list, cleaned of `(hierarchy name)`
+  noise — never free text; anything outside the list is dropped, and `""` is a
+  normal answer since the anchors don't cover every term). Also **advisory
+  only**: when several candidates sit in preferred hierarchies, `classify`
+  proposes the strongest one in the *expected* hierarchy before falling back to
+  any hierarchy, with the same guards (a trusted nb/nn exact is never
+  overridden, the gate and tier never change). Agreement, disagreement, or an
+  unrecognized edited label is annotated in `reasons`, and the prediction is
+  shown in the `expected_hierarchy` column of `03b_review.csv` next to
+  `proposed_hierarchy`. In profiles without `preferred_hierarchies` the field
+  is simply not requested — `expected_facet` remains the coarse fallback there.
+  Note the prediction only exists for terms that went through the translate
+  step (those missing source-data English).
 
 Because the response schema changed for these fields, `prompt_version` is now
-`v3` (the bump invalidates cached `v2` translations, which lack them).
+`v4` (the bump invalidates older cached translations, which lack them).
+`facets.preferred` is deprecated and unused; profiles that still set it get a
+warning from `Profile.validate()`.
 
 Settings live in the profile `translation:` block (model, `context`,
 `batch_size`, sibling options, `domain_by_root`, `prompt_version`). Use

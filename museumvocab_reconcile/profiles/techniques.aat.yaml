@@ -14,7 +14,6 @@ languages:
                                # blocks coincidental hits on untracked-language labels ("und")
 
 facets:
-  preferred: techniques        # influences tiering/ranking; never hard-filters
   accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
   accepted: [techniques, work_types, materials, formats, design_motifs]
   hierarchy_mode: prefer       # prefer | off — `prefer` favours candidates in a
@@ -67,8 +66,9 @@ translation:                     # optional step 1b (LLM English for terms missi
   temperature: 0
   include_siblings: true         # add same-parent siblings as disambiguation context
   max_siblings: 6
-  prompt_version: v3             # bump to invalidate the translation cache
+  prompt_version: v4             # bump to invalidate the translation cache
                                  # v3: response schema adds expected_facet (advisory)
+                                 # v4: adds expected_hierarchy (advisory, from preferred_hierarchies labels)
   domain_by_root:               # top-level parent term -> domain phrase for the prompt
     Arkitektonisk: "architecture (architecture museum context)"
     Design: "design, arts and crafts"

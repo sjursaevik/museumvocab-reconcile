@@ -12,7 +12,6 @@ languages:
   match_langs: [nb, nn, en] 
 
 facets:
-  preferred: work_types        # influences tiering/ranking; never hard-filters
   accept_all: true            # when true, any returned facet is accepted and `accepted` is ignored
   accepted: [materials, formats, work_types, techniques]
   hierarchy_mode: prefer       # prefer | off — `prefer` favours candidates in a
@@ -62,6 +61,7 @@ lookup:
   result_limit: 10          # candidates requested per reconciliation query
   enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
   min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
+  max_alternative_queries: 3   # fallback queries from LLM alternatives when primary queries find nothing (0 = off)
 
 review:
   include_auto_accepted: true   # also write auto-accepted terms into 03b_review.csv
@@ -75,7 +75,9 @@ translation:                     # optional step 1b (LLM English for terms missi
   temperature: 0
   include_siblings: true         # add same-parent siblings as disambiguation context
   max_siblings: 6
-  prompt_version: v2             # bump to invalidate the translation cache
+  prompt_version: v4             # bump to invalidate the translation cache
+                                 # v3: response schema adds expected_facet (advisory)
+                                 # v4: adds expected_hierarchy (advisory, from preferred_hierarchies labels)
   domain_by_root:               # top-level parent term -> domain phrase for the prompt
     Arkitektonisk: "architecture (architecture museum context)"
     Design: "design, arts and crafts"

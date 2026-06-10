@@ -20,6 +20,7 @@ two overrides added in review:
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,11 +70,25 @@ class LanguageConfig:
         return self.aliases.get(c, c)
 
 
+def normalize_hierarchy_label(label: str) -> str:
+    """Canonical form of a preferred-hierarchy label for matching.
+
+    AAT hierarchy names carry display noise — '(hierarchy name)' suffixes and
+    guide-term angle brackets — that an LLM (or a cataloguer editing the CSV)
+    should not have to reproduce. Lowercase, strip a trailing parenthetical,
+    strip angle brackets, collapse whitespace.
+    """
+    s = (label or "").strip()
+    s = re.sub(r"\s*\([^)]*\)\s*$", "", s)   # trailing "(hierarchy name)" etc.
+    s = s.strip("<>").strip()
+    return re.sub(r"\s+", " ", s).casefold()
+
+
 @dataclass
 class FacetConfig:
-    preferred: str | None = None       # legacy single-facet hint; superseded for
-                                       # ranking by preferred_hierarchies (kept for
-                                       # backward compat; not consumed by tiering).
+    preferred: str | None = None       # DEPRECATED: not consumed anywhere. Use
+                                       # preferred_hierarchies for ranking
+                                       # preference; will be removed.
     accept_all: bool = False           # accept any returned facet (ignores `accepted`)
     accepted: list[str] = field(default_factory=list)
     # Fine-grained preference WITHIN accepted facets: AAT anchor id -> human label.
@@ -107,11 +122,20 @@ class FacetConfig:
             return False
         return facet in self.accepted
 
+    def in_hierarchy(self, candidate: Any, anchor_id: str) -> bool:
+        """True if the anchor id equals the candidate's own id or appears in its
+        ancestor chain (the preferred-parent climb stored on the Candidate)."""
+        if candidate.concept_id == anchor_id:
+            return True
+        return any(
+            a.get("id") == anchor_id
+            for a in (getattr(candidate, "ancestors", None) or [])
+        )
+
     def hierarchy_hit(self, candidate: Any) -> str | None:
         """The most specific preferred-hierarchy anchor this candidate sits under,
-        or None. Membership = an anchor id equals the candidate's own id or appears
-        in its ancestor chain (the preferred-parent climb stored on the Candidate).
-        The chain is narrow->broad, so the first anchor hit is the most specific."""
+        or None. The ancestor chain is narrow->broad, so the first anchor hit is
+        the most specific."""
         if not self.preferred_hierarchies:
             return None
         chain = [candidate.concept_id]
@@ -119,6 +143,22 @@ class FacetConfig:
         for cid in chain:
             if cid in self.preferred_hierarchies:
                 return cid
+        return None
+
+    def hierarchy_options(self) -> list[str]:
+        """Cleaned, human-readable labels of the preferred hierarchies, in
+        profile order — the closed set an LLM may pick expected_hierarchy from."""
+        return [normalize_hierarchy_label(v) for v in self.preferred_hierarchies.values()]
+
+    def resolve_hierarchy_label(self, label: str) -> str | None:
+        """Map a (possibly noisy, possibly human-edited) hierarchy label back to
+        its anchor id via normalized comparison; None if it matches no anchor."""
+        want = normalize_hierarchy_label(label)
+        if not want:
+            return None
+        for anchor_id, anchor_label in self.preferred_hierarchies.items():
+            if normalize_hierarchy_label(anchor_label) == want:
+                return anchor_id
         return None
 
 
@@ -171,6 +211,10 @@ class LookupConfig:
     enrich_top_n: int = 5
     # Drop candidates scoring below this before enriching (0 = keep all).
     min_candidate_score: float = 0.0
+    # When the primary (source/target) queries yield no usable candidate, query
+    # at most this many of the term's LLM alternative labels as a fallback
+    # (0 disables the fallback entirely).
+    max_alternative_queries: int = 3
 
 
 @dataclass
@@ -190,7 +234,15 @@ class TranslationConfig:
     temperature: float = 0.0
     include_siblings: bool = True
     max_siblings: int = 6
-    prompt_version: str = "v2"         # bump to invalidate the translation cache
+    prompt_version: str = "v4"         # bump to invalidate the translation cache
+    # Internal facet names the LLM may predict in `expected_facet` (advisory
+    # signal for tiering). Usually left empty and derived at runtime from
+    # facets.accepted; set explicitly only to override that derivation.
+    facet_options: list[str] = field(default_factory=list)
+    # Cleaned preferred-hierarchy labels the LLM may predict in
+    # `expected_hierarchy` (advisory, one level finer than expected_facet).
+    # Usually derived at runtime from facets.preferred_hierarchies.
+    hierarchy_options: list[str] = field(default_factory=list)
     # Optional: top-level (root) parent term -> domain phrase for the prompt, so
     # a term under "Arkitektonisk" is read as architecture, "Billedkunst" as
     # visual arts, etc. Unmapped roots are passed through verbatim.
@@ -231,6 +283,23 @@ class Profile:
     def validate(self) -> list[str]:
         """Return a list of warnings (empty == clean). Hard errors raise."""
         warnings: list[str] = []
+        if self.facets.preferred:
+            warnings.append(
+                "facets.preferred is deprecated and not consumed anywhere; "
+                "remove it (use facets.preferred_hierarchies for ranking preference)."
+            )
+        seen: dict[str, str] = {}
+        for anchor_id, label in self.facets.preferred_hierarchies.items():
+            norm = normalize_hierarchy_label(label)
+            if norm in seen:
+                warnings.append(
+                    f"facets.preferred_hierarchies labels {seen[norm]!r} and "
+                    f"{anchor_id!r} normalize to the same name {norm!r}: an LLM "
+                    f"expected_hierarchy prediction cannot be mapped back "
+                    f"unambiguously. Give the anchors distinct labels."
+                )
+            else:
+                seen[norm] = anchor_id
         if not self.facets.accept_all and not self.facets.accepted:
             warnings.append(
                 "facets.accept_all is False but facets.accepted is empty: "

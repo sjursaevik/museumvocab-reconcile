@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .config import Profile, TranslationConfig
+from .config import Profile, TranslationConfig, normalize_hierarchy_label
 from .model import SourceTerm
 from .review import _detect_delimiter, _read_csv_text  # reuse robust CSV decode
 
@@ -37,6 +37,13 @@ class TranslationResult:
     alternatives: list[str]
     confidence: str          # "high" | "medium" | "low"
     note: str = ""
+    # LLM-predicted internal facet (one of the profile's facet options, or "").
+    # Advisory only — see model.SourceTerm.expected_facet.
+    expected_facet: str = ""
+    # LLM-predicted preferred hierarchy (one of the profile's cleaned
+    # preferred_hierarchies labels, or ""). Advisory only — see
+    # model.SourceTerm.expected_hierarchy.
+    expected_hierarchy: str = ""
 
 
 class Translator(Protocol):
@@ -68,8 +75,18 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_user_prompt(items: list[dict[str, Any]], context: str) -> str:
-    """Build a batched prompt asking for a strict JSON array back."""
+def build_user_prompt(
+    items: list[dict[str, Any]],
+    context: str,
+    facet_options: list[str] | None = None,
+    hierarchy_options: list[str] | None = None,
+) -> str:
+    """Build a batched prompt asking for a strict JSON array back.
+
+    ``facet_options`` (the profile's internal facet names) extends only the
+    response SCHEMA with an advisory ``expected_facet`` prediction; the per-term
+    context (term/domain/parents/siblings) is deliberately unchanged.
+    """
     lines = []
     if context:
         lines.append(f"Domain context: {context}")
@@ -88,10 +105,32 @@ def build_user_prompt(items: list[dict[str, Any]], context: str) -> str:
         if it.get("siblings"):
             parts.append(f'  siblings: {", ".join(it["siblings"])}')
         lines.append("\n".join(parts))
+    schema = (
+        '{"id": "<id>", "english": "<label>", "alternatives": ["<alt>", ...], '
+        '"confidence": "high|medium|low", "note": "<short note or empty>"'
+    )
+    if facet_options:
+        schema += ', "expected_facet": "<facet or empty>"'
+        lines.append(
+            "\nAlso predict which facet of the thesaurus each term belongs to, as "
+            '"expected_facet": exactly one of '
+            + ", ".join(repr(f) for f in facet_options)
+            + ', or "" if unsure. This is an advisory hint only.'
+        )
+    if hierarchy_options:
+        schema += ', "expected_hierarchy": "<hierarchy or empty>"'
+        lines.append(
+            "\nAlso predict, as \"expected_hierarchy\", which of these vocabulary "
+            "sub-hierarchies the term belongs to. Copy the name verbatim from this "
+            "closed list: " + ", ".join(repr(h) for h in hierarchy_options)
+            + '. The list does NOT cover every term: pick one ONLY when it clearly '
+            'applies, and answer "" otherwise — "" is a normal, expected answer, '
+            "not a failure. This is an advisory hint only."
+        )
     lines.append(
         "\nReturn ONLY a JSON array, no prose, no markdown fences. Each element: "
-        '{"id": "<id>", "english": "<label>", "alternatives": ["<alt>", ...], '
-        '"confidence": "high|medium|low", "note": "<short note or empty>"}'
+        + schema
+        + "}"
     )
     return "\n".join(lines)
 
@@ -131,7 +170,12 @@ class AnthropicTranslator:
             max_tokens=cfg.max_tokens,
             temperature=cfg.temperature,
             system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": build_user_prompt(items, context)}],
+            messages=[{
+                "role": "user",
+                "content": build_user_prompt(
+                    items, context, cfg.facet_options, cfg.hierarchy_options
+                ),
+            }],
         )
         text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
         return parse_response(text)
@@ -209,6 +253,12 @@ def run_translation(
     use the full vocabulary). ``force`` bypasses the cache read so targeted ids
     are always re-queried. Returns id -> TranslationResult."""
     cfg = profile.translation
+    # Facet options the LLM may predict: explicit override, else the profile's
+    # accepted facet set. Cached on cfg so providers can read it uniformly.
+    if not cfg.facet_options:
+        cfg.facet_options = list(profile.facets.accepted)
+    if not cfg.hierarchy_options:
+        cfg.hierarchy_options = profile.facets.hierarchy_options()
     stamp = f"tr:{cfg.prompt_version}:{cfg.model}:"
     siblings = compute_siblings(terms, cfg.max_siblings) if cfg.include_siblings else {}
     domain_map = {k.casefold(): v for k, v in (cfg.domain_by_root or {}).items()}
@@ -246,12 +296,25 @@ def run_translation(
             r = by_id.get(t.id)
             if not r or not r.get("english"):
                 continue
+            # Keep expected_facet only if it is one of the offered options —
+            # anything else (hallucinated/free-text) is dropped, not propagated.
+            ef = str(r.get("expected_facet", "")).strip().lower()
+            if cfg.facet_options and ef not in {f.lower() for f in cfg.facet_options}:
+                ef = ""
+            # Keep expected_hierarchy only if it maps back to a profile anchor;
+            # store the cleaned label (what reviewers see and may edit).
+            eh = ""
+            raw_eh = str(r.get("expected_hierarchy", "")).strip()
+            if raw_eh and profile.facets.resolve_hierarchy_label(raw_eh):
+                eh = normalize_hierarchy_label(raw_eh)
             res = TranslationResult(
                 id=t.id,
                 english=str(r.get("english", "")).strip(),
                 alternatives=[str(a) for a in r.get("alternatives", []) if a],
                 confidence=str(r.get("confidence", "")).lower() or "medium",
                 note=str(r.get("note", "")).strip(),
+                expected_facet=ef,
+                expected_hierarchy=eh,
             )
             results[t.id] = res
             if cache:
@@ -268,6 +331,11 @@ TRANSLATION_COLUMNS = [
     "id", "source_term", "parents", "siblings",        # context (read-only)
     "llm_english", "alternatives", "confidence", "note",
     # ---- editable by the cataloguer ----
+    # expected_facet / expected_hierarchy: LLM's advisory predictions — correct
+    # or blank them here; alternatives (above) may be pruned too: all flow into
+    # lookup/tiering. expected_hierarchy must be one of the profile's
+    # preferred_hierarchies labels (unrecognized values are ignored downstream).
+    "expected_facet", "expected_hierarchy",
     "accept", "approved_english",
 ]
 
@@ -301,6 +369,8 @@ def export_translations_csv(
                 "alternatives": ", ".join(res.alternatives),
                 "confidence": res.confidence,
                 "note": res.note,
+                "expected_facet": res.expected_facet,
+                "expected_hierarchy": res.expected_hierarchy,
                 "accept": "yes",
                 "approved_english": res.english,
             })
@@ -314,6 +384,13 @@ class TranslationDecision:
     accept: bool
     approved_english: str
     llm_english: str
+    alternatives: list[str] = None  # type: ignore[assignment]  # set in __post_init__
+    expected_facet: str = ""
+    expected_hierarchy: str = ""
+
+    def __post_init__(self):
+        if self.alternatives is None:
+            self.alternatives = []
 
     @property
     def source(self) -> str:
@@ -321,6 +398,10 @@ class TranslationDecision:
         a = (self.approved_english or "").strip().casefold()
         l = (self.llm_english or "").strip().casefold()
         return "human" if a and a != l else "llm"
+
+
+def _split_alternatives(raw: str) -> list[str]:
+    return [a.strip() for a in (raw or "").split(",") if a.strip()]
 
 
 def ingest_translations_csv(path: str | Path) -> dict[str, TranslationDecision]:
@@ -342,6 +423,11 @@ def ingest_translations_csv(path: str | Path) -> dict[str, TranslationDecision]:
             accept=accept,
             approved_english=(row.get("approved_english") or "").strip(),
             llm_english=(row.get("llm_english") or "").strip(),
+            alternatives=_split_alternatives(row.get("alternatives") or ""),
+            expected_facet=(row.get("expected_facet") or "").strip().lower(),
+            expected_hierarchy=normalize_hierarchy_label(
+                row.get("expected_hierarchy") or ""
+            ),
         )
     return out
 
@@ -350,13 +436,26 @@ def apply_translations(
     terms: list[SourceTerm], decisions: dict[str, TranslationDecision]
 ) -> tuple[list[SourceTerm], int]:
     """Return terms with approved English folded into main_target_term and
-    target_source tagged llm/human. Count of applied translations is returned."""
+    target_source tagged llm/human. Alternatives (deduped, minus the approved
+    label) and the advisory expected_facet ride along on the term for lookup/
+    tiering. Count of applied translations is returned."""
     applied = 0
     for t in terms:
         d = decisions.get(t.id)
         if d and d.accept and d.approved_english and not t.main_target_term:
             t.main_target_term = d.approved_english
             t.target_source = d.source
+            approved = d.approved_english.strip().casefold()
+            seen: set[str] = {approved}
+            alts: list[str] = []
+            for a in d.alternatives:
+                key = a.strip().casefold()
+                if key and key not in seen:
+                    seen.add(key)
+                    alts.append(a.strip())
+            t.target_alternatives = alts
+            t.expected_facet = d.expected_facet or None
+            t.expected_hierarchy = d.expected_hierarchy or None
             applied += 1
     return terms, applied
 
@@ -448,6 +547,8 @@ def apply_results_to_csv(
         row["alternatives"] = ", ".join(res.alternatives)
         row["confidence"] = res.confidence
         row["note"] = res.note
+        row["expected_facet"] = res.expected_facet
+        row["expected_hierarchy"] = res.expected_hierarchy
         row["approved_english"] = res.english
         row["accept"] = "yes"
         updated += 1

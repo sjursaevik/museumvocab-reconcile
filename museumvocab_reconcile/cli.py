@@ -159,6 +159,56 @@ def cmd_translate_apply(args):
     )
 
 
+def gather_candidates(
+    term: SourceTerm,
+    adapter,
+    languages,
+    result_limit: int,
+    min_score: float = 0.0,
+    max_alternative_queries: int = 3,
+) -> tuple[list[Candidate], bool]:
+    """Run the primary (source/target) reconcile queries for one term, falling
+    back to the term's LLM alternative labels only when the primary queries
+    yield no candidate at or above ``min_score``.
+
+    Returns (candidates, used_alternatives). Alternative-surfaced candidates are
+    ordinary lookup results — provenance stays visible via Candidate.query_lang/
+    query_term plus term.target_source, and tiering routes LLM-English-surfaced
+    matches to review (never auto-accept).
+    """
+    order = languages.query_order_by_depth.get(
+        "leaf" if term.is_leaf else "root", [languages.source, languages.target]
+    )
+    cands: dict[str, Candidate] = {}
+
+    def add(c: Candidate) -> None:
+        prev = cands.get(c.concept_id)
+        # Keep the occurrence whose QUERY was in the source language: with
+        # root-order [en, nb] an en-found duplicate would otherwise mask the
+        # fact that the trusted nb query also surfaced the same concept.
+        if prev is None or (
+            prev.query_lang != languages.source and c.query_lang == languages.source
+        ):
+            cands[c.concept_id] = c
+
+    for lang in order:
+        label = term.main_lang_term if lang == languages.source else term.main_target_term
+        if not label:
+            continue
+        for c in adapter.search(label, lang, limit=result_limit):
+            add(c)
+
+    used_alternatives = False
+    usable = [c for c in cands.values() if c.score >= min_score] if min_score else cands.values()
+    if not usable and term.target_alternatives and max_alternative_queries > 0:
+        used_alternatives = True
+        for alt in term.target_alternatives[:max_alternative_queries]:
+            for c in adapter.search(alt, languages.target, limit=result_limit):
+                add(c)
+
+    return list(cands.values()), used_alternatives
+
+
 def cmd_lookup(args):
     import time
 
@@ -209,28 +259,24 @@ def cmd_lookup(args):
 
     try:
         for i, t in enumerate(pending, 1):
-            order = lang_order.query_order_by_depth.get(
-                "leaf" if t.is_leaf else "root", [lang_order.source, lang_order.target]
-            )
             try:
-                cands: dict[str, Candidate] = {}
-                for lang in order:
-                    label = t.main_lang_term if lang == lang_order.source else t.main_target_term
-                    if not label:
-                        continue
-                    for c in adapter.search(label, lang, limit=result_limit):
-                        cands.setdefault(c.concept_id, c)
+                cand_list, used_alts = gather_candidates(
+                    t, adapter, lang_order, result_limit,
+                    min_score=min_score,
+                    max_alternative_queries=lk.max_alternative_queries,
+                )
                 # Score filter + top-N cap BEFORE enrichment: each enrichment
                 # fetches a concept and walks its hierarchy, so this bounds both
                 # runtime and cache growth.
-                ranked = sorted(cands.values(), key=lambda c: c.score, reverse=True)
+                ranked = sorted(cand_list, key=lambda c: c.score, reverse=True)
                 if min_score:
                     ranked = [c for c in ranked if c.score >= min_score]
                 if enrich_top_n:
                     ranked = ranked[:enrich_top_n]
                 enriched = adapter.enrich_candidates(ranked, lang_order.target)
                 results.append({"term": asdict(t), "candidates": [asdict(c) for c in enriched]})
-                print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> {len(enriched)} candidates")
+                via = " (via LLM alternatives)" if used_alts and enriched else ""
+                print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> {len(enriched)} candidates{via}")
             except Exception as exc:  # network or parse error: record and continue
                 results.append({"term": asdict(t), "candidates": [], "error": repr(exc)})
                 print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> ERROR: {exc}")

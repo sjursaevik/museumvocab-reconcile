@@ -25,7 +25,6 @@ BASE_PROFILE: dict[str, Any] = {
         "trusted_exact_match_langs": ["nb", "nn"],
     },
     "facets": {
-        "preferred": "work_types",
         "accept_all": False,
         "accepted": ["materials", "formats", "work_types", "techniques"],
     },
@@ -67,6 +66,7 @@ def make_candidate(
     aat_facet: str | None = None,
     ancestors: list[dict[str, Any]] | None = None,
     query_term: str = "",
+    query_lang: str | None = None,   # defaults to matched_lang
 ) -> Candidate:
     return Candidate(
         authority="aat",
@@ -75,7 +75,7 @@ def make_candidate(
         score=score,
         matched_label=matched_label,
         matched_lang=matched_lang,
-        query_lang=matched_lang,
+        query_lang=query_lang if query_lang is not None else matched_lang,
         is_exact=is_exact,
         facet=facet,
         query_term=query_term,
@@ -86,7 +86,11 @@ def make_candidate(
 
 
 def make_term(
-    *, term_id: str = "1", nb: str = "ting", en: str = "", level: int = 1
+    *, term_id: str = "1", nb: str = "ting", en: str = "", level: int = 1,
+    target_source: str = "source_data",
+    target_alternatives: list[str] | None = None,
+    expected_facet: str | None = None,
+    expected_hierarchy: str | None = None,
 ) -> SourceTerm:
     return SourceTerm(
         id=term_id,
@@ -98,6 +102,10 @@ def make_term(
         main_level=level,
         parents_source=[],
         parents_target=[],
+        target_source=target_source,
+        target_alternatives=target_alternatives or [],
+        expected_facet=expected_facet,
+        expected_hierarchy=expected_hierarchy,
     )
 
 

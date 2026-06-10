@@ -243,6 +243,16 @@ class TranslationConfig:
     # `expected_hierarchy` (advisory, one level finer than expected_facet).
     # Usually derived at runtime from facets.preferred_hierarchies.
     hierarchy_options: list[str] = field(default_factory=list)
+    # When true, terms that ALREADY have source-data English also pass through
+    # the LLM — for expected_facet/expected_hierarchy predictions ONLY. Their
+    # English, target_source and (absence of) alternatives are never touched.
+    # Off by default (it scales LLM volume to the whole vocabulary); enable per
+    # run with `translate --predict-all`.
+    predict_all: bool = False
+    # Version counter for the prediction-only prompt and its cache entries
+    # (namespace `cls:`). Independent of prompt_version so prediction prompt
+    # changes never invalidate cached translations, and vice versa.
+    predict_prompt_version: str = "v1"
     # Optional: top-level (root) parent term -> domain phrase for the prompt, so
     # a term under "Arkitektonisk" is read as architecture, "Billedkunst" as
     # visual arts, etc. Unmapped roots are passed through verbatim.

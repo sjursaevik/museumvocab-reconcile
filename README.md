@@ -148,8 +148,22 @@ in the CSV before `translate-apply`):
   shown in the `expected_hierarchy` column of `03b_review.csv` next to
   `proposed_hierarchy`. In profiles without `preferred_hierarchies` the field
   is simply not requested — `expected_facet` remains the coarse fallback there.
-  Note the prediction only exists for terms that went through the translate
-  step (those missing source-data English).
+  Note the prediction normally only exists for terms that went through the
+  translate step (those missing source-data English). `translate --predict-all`
+  closes that gap: terms that **already have** source-data English are also run
+  through the LLM — with a separate prediction-only prompt that shows their
+  existing English as context — producing **only** `expected_facet` /
+  `expected_hierarchy`. Their English is never produced, changed, or queried
+  differently: `main_target_term`, `target_source` (stays `source_data`) and
+  the absence of LLM `alternatives` are untouched, so the trust rules above are
+  unaffected. These rows appear in `01b_translations.csv` with `task: predict`
+  and a blank `approved_english` (anything typed there is ignored), behind the
+  same `accept` gate; `translate-apply` folds in only the predictions.
+  Prediction cache entries live in a separate `cls:` namespace with their own
+  `predict_prompt_version`, so enabling or tweaking this never invalidates
+  cached translations. Off by default (it scales LLM volume from the
+  missing-English subset to the whole vocabulary); `retranslate` refreshes
+  predict rows automatically when they match the selection.
 
 Because the response schema changed for these fields, `prompt_version` is now
 `v4` (the bump invalidates older cached translations, which lack them).

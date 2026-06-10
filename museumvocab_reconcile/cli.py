@@ -36,6 +36,7 @@ from .translate import (
     flag_anomalies,
     get_translator,
     ingest_translations_csv,
+    has_target,
     missing_target,
     run_translation,
     select_retranslate_ids,
@@ -81,14 +82,23 @@ def cmd_prep(args):
 
 def cmd_translate(args):
     profile = _load_profile(args.profile)
+    if getattr(args, "predict_all", False):
+        profile.translation.predict_all = True
     terms = [SourceTerm(**d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
     targets = missing_target(terms)
     n_target = len(targets if not args.max_terms else targets[: args.max_terms])
+    n_predict = 0
+    if profile.translation.predict_all:
+        predict_pop = has_target(terms)
+        n_predict = len(predict_pop if not args.max_terms else predict_pop[: args.max_terms])
+    bs = profile.translation.batch_size
     print(
         f"translate: {len(terms)} terms, {len(targets)} missing English"
         + (f"; will translate up to {args.max_terms}" if args.max_terms else f"; will translate {len(targets)}")
-        + f". Estimated API calls ~{-(-n_target // profile.translation.batch_size)} "
-        f"(batch_size={profile.translation.batch_size})."
+        + (f"; will predict facet/hierarchy for {n_predict} terms with existing English"
+           if profile.translation.predict_all else "")
+        + f". Estimated API calls ~{-(-n_target // bs) + -(-n_predict // bs)} "
+        f"(batch_size={bs})."
     )
     if args.dry_run:
         print("translate: --dry-run set, no API calls made.")
@@ -145,7 +155,7 @@ def cmd_translate_apply(args):
     _load_profile(args.profile)  # validate profile early
     terms = [SourceTerm(**d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
     decisions = ingest_translations_csv(args.translations)
-    terms, applied = apply_translations(terms, decisions)
+    terms, applied, predicted = apply_translations(terms, decisions)
     Path(args.out).write_text(
         json.dumps([asdict(t) for t in terms], ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -154,8 +164,10 @@ def cmd_translate_apply(args):
     n_human = sum(1 for t in terms if t.target_source == "human")
     print(
         f"translate-apply: applied {applied} translations "
-        f"({n_llm} llm, {n_human} human-edited) -> {args.out}  "
-        f"(now run: lookup --inp {args.out})"
+        f"({n_llm} llm, {n_human} human-edited)"
+        + (f" and {predicted} facet/hierarchy predictions for terms with existing English"
+           if predicted else "")
+        + f" -> {args.out}  (now run: lookup --inp {args.out})"
     )
 
 
@@ -378,7 +390,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("prep"); s.add_argument("source"); s.add_argument("--out", default="01_prepared.json"); s.set_defaults(func=cmd_prep)
-    s = sub.add_parser("translate"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--out", default="01b_translations.csv"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0, help="translate at most N terms (smoke test)"); s.add_argument("--dry-run", action="store_true", help="report how many terms would be translated, make no API calls"); s.set_defaults(func=cmd_translate)
+    s = sub.add_parser("translate"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--out", default="01b_translations.csv"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0, help="translate at most N terms (smoke test)"); s.add_argument("--dry-run", action="store_true", help="report how many terms would be translated, make no API calls"); s.add_argument("--predict-all", action="store_true", help="also run terms that ALREADY have English through the LLM, for advisory expected_facet/expected_hierarchy predictions only (their English is never touched)"); s.set_defaults(func=cmd_translate)
     s = sub.add_parser("translate-apply"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--translations", default="01b_translations.csv"); s.add_argument("--out", default="01b_translated.json"); s.set_defaults(func=cmd_translate_apply)
     s = sub.add_parser("flag-anomalies"); s.add_argument("--inp", default="01b_translations.csv"); s.add_argument("--out", default="01b_anomalies.csv"); s.set_defaults(func=cmd_flag_anomalies)
     s = sub.add_parser("retranslate"); s.add_argument("--inp", default="01_prepared.json", help="prepared terms (for context)"); s.add_argument("--translations", default="01b_translations.csv", help="existing translations to refresh"); s.add_argument("--out", default="01b_translations.csv", help="merged output (defaults to overwriting --translations)"); s.add_argument("--confidence", default="low,medium", help="comma list of confidences to re-translate"); s.add_argument("--ids", default="", help="comma list of specific term ids to re-translate"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0); s.add_argument("--dry-run", action="store_true", help="report selection, make no API calls"); s.set_defaults(func=cmd_retranslate)

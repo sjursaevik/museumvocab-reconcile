@@ -93,8 +93,8 @@ def test_csv_roundtrip_carries_alternatives_and_expected_facet(tmp_path):
     assert d.alternatives == ["gilt", "gold plating"]
     assert d.expected_facet == "techniques"
 
-    applied_terms, n = apply_translations(terms, decisions)
-    assert n == 1
+    applied_terms, n, n_pred = apply_translations(terms, decisions)
+    assert n == 1 and n_pred == 0
     t = applied_terms[0]
     assert t.main_target_term == "gilding"
     assert t.target_source == "llm"
@@ -110,7 +110,7 @@ def test_apply_dedupes_alternatives_against_approved_english(tmp_path):
     )}
     csv_path = tmp_path / "tr.csv"
     export_translations_csv(terms, results, csv_path)
-    applied_terms, _ = apply_translations(terms, ingest_translations_csv(csv_path))
+    applied_terms, _, _ = apply_translations(terms, ingest_translations_csv(csv_path))
     # "Gilding" duplicates the approved label; the repeated "gilt" is deduped.
     assert applied_terms[0].target_alternatives == ["gilt"]
 

@@ -30,6 +30,59 @@ from .review import _detect_delimiter, _read_csv_text  # reuse robust CSV decode
 
 # ---- result + provider seam ----------------------------------------------
 
+PREDICT_SYSTEM_PROMPT = (
+    "You are a museum cataloguing assistant. You classify controlled-vocabulary "
+    "terms into the facets and sub-hierarchies of art and conservation thesauri "
+    "such as the Getty AAT. Each term comes with its existing, authoritative "
+    "English label and hierarchical context; you do NOT translate or change any "
+    "label. Choose only from the options offered, prefer an empty answer over a "
+    "forced fit, and return strictly the JSON requested with no prose."
+)
+
+
+def build_predict_prompt(
+    items: list[dict[str, Any]],
+    context: str,
+    facet_options: list[str] | None = None,
+    hierarchy_options: list[str] | None = None,
+) -> str:
+    """Prediction-only prompt for terms that ALREADY have source-data English.
+
+    Same per-term context as the translation prompt plus the existing English
+    label (human-catalogued, so safe — and strong — classification signal). The
+    response schema asks only for the advisory predictions: no english, no
+    alternatives."""
+    lines = []
+    if context:
+        lines.append(f"Domain context: {context}")
+    lines.append(
+        "Classify each term below. Read each term within its top-level "
+        "collection area (domain) and use its English label and the parent and "
+        "sibling terms as context — do not translate anything.\n"
+    )
+    for it in items:
+        parts = [f'- id: {it["id"]}', f'  term: {it["term"]}']
+        if it.get("english"):
+            parts.append(f'  english label: {it["english"]}')
+        if it.get("domain"):
+            parts.append(f'  domain (top-level collection area): {it["domain"]}')
+        if it.get("parents"):
+            parts.append(f'  parents (broad to narrow): {" > ".join(it["parents"])}')
+        if it.get("siblings"):
+            parts.append(f'  siblings: {", ".join(it["siblings"])}')
+        lines.append("\n".join(parts))
+    schema = '{"id": "<id>", "confidence": "high|medium|low", "note": "<short note or empty>"'
+    suffix, extra = _prediction_schema(facet_options, hierarchy_options)
+    schema += suffix
+    lines.extend(extra)
+    lines.append(
+        "\nReturn ONLY a JSON array, no prose, no markdown fences. Each element: "
+        + schema
+        + "}"
+    )
+    return "\n".join(lines)
+
+
 @dataclass
 class TranslationResult:
     id: str
@@ -75,6 +128,33 @@ SYSTEM_PROMPT = (
 )
 
 
+def _prediction_schema(
+    facet_options: list[str] | None, hierarchy_options: list[str] | None
+) -> tuple[str, list[str]]:
+    """Schema suffix + instruction lines for the advisory predictions, shared by
+    the translation and prediction-only prompts so they can never diverge."""
+    suffix, lines = "", []
+    if facet_options:
+        suffix += ', "expected_facet": "<facet or empty>"'
+        lines.append(
+            "\nAlso predict which facet of the thesaurus each term belongs to, as "
+            '"expected_facet": exactly one of '
+            + ", ".join(repr(f) for f in facet_options)
+            + ', or "" if unsure. This is an advisory hint only.'
+        )
+    if hierarchy_options:
+        suffix += ', "expected_hierarchy": "<hierarchy or empty>"'
+        lines.append(
+            "\nAlso predict, as \"expected_hierarchy\", which of these vocabulary "
+            "sub-hierarchies the term belongs to. Copy the name verbatim from this "
+            "closed list: " + ", ".join(repr(h) for h in hierarchy_options)
+            + '. The list does NOT cover every term: pick one ONLY when it clearly '
+            'applies, and answer "" otherwise — "" is a normal, expected answer, '
+            "not a failure. This is an advisory hint only."
+        )
+    return suffix, lines
+
+
 def build_user_prompt(
     items: list[dict[str, Any]],
     context: str,
@@ -109,24 +189,9 @@ def build_user_prompt(
         '{"id": "<id>", "english": "<label>", "alternatives": ["<alt>", ...], '
         '"confidence": "high|medium|low", "note": "<short note or empty>"'
     )
-    if facet_options:
-        schema += ', "expected_facet": "<facet or empty>"'
-        lines.append(
-            "\nAlso predict which facet of the thesaurus each term belongs to, as "
-            '"expected_facet": exactly one of '
-            + ", ".join(repr(f) for f in facet_options)
-            + ', or "" if unsure. This is an advisory hint only.'
-        )
-    if hierarchy_options:
-        schema += ', "expected_hierarchy": "<hierarchy or empty>"'
-        lines.append(
-            "\nAlso predict, as \"expected_hierarchy\", which of these vocabulary "
-            "sub-hierarchies the term belongs to. Copy the name verbatim from this "
-            "closed list: " + ", ".join(repr(h) for h in hierarchy_options)
-            + '. The list does NOT cover every term: pick one ONLY when it clearly '
-            'applies, and answer "" otherwise — "" is a normal, expected answer, '
-            "not a failure. This is an advisory hint only."
-        )
+    suffix, extra = _prediction_schema(facet_options, hierarchy_options)
+    schema += suffix
+    lines.extend(extra)
     lines.append(
         "\nReturn ONLY a JSON array, no prose, no markdown fences. Each element: "
         + schema
@@ -164,21 +229,30 @@ class AnthropicTranslator:
         self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
         self.cfg = cfg
 
-    def translate_batch(self, items, context, cfg):
+    def _call(self, system: str, prompt: str, cfg):
         resp = self.client.messages.create(
             model=cfg.model,
             max_tokens=cfg.max_tokens,
             temperature=cfg.temperature,
-            system=SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": build_user_prompt(
-                    items, context, cfg.facet_options, cfg.hierarchy_options
-                ),
-            }],
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
         )
         text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
         return parse_response(text)
+
+    def translate_batch(self, items, context, cfg):
+        return self._call(
+            SYSTEM_PROMPT,
+            build_user_prompt(items, context, cfg.facet_options, cfg.hierarchy_options),
+            cfg,
+        )
+
+    def predict_batch(self, items, context, cfg):
+        return self._call(
+            PREDICT_SYSTEM_PROMPT,
+            build_predict_prompt(items, context, cfg.facet_options, cfg.hierarchy_options),
+            cfg,
+        )
 
 
 def get_translator(cfg: TranslationConfig) -> Translator:
@@ -237,6 +311,26 @@ def missing_target(terms: list[SourceTerm]) -> list[SourceTerm]:
     return [t for t in terms if not t.main_target_term and t.main_lang_term]
 
 
+def has_target(terms: list[SourceTerm]) -> list[SourceTerm]:
+    """Terms with source-data English — the predict-all population."""
+    return [t for t in terms if t.main_target_term and t.main_lang_term]
+
+
+def _validated_predictions(r: dict[str, Any], cfg, profile) -> tuple[str, str]:
+    """Validate the advisory fields of one raw LLM element. expected_facet must
+    be one of the offered options; expected_hierarchy must map back to a profile
+    anchor (stored as the cleaned label). Anything else is dropped, not
+    propagated."""
+    ef = str(r.get("expected_facet", "")).strip().lower()
+    if cfg.facet_options and ef not in {f.lower() for f in cfg.facet_options}:
+        ef = ""
+    eh = ""
+    raw_eh = str(r.get("expected_hierarchy", "")).strip()
+    if raw_eh and profile.facets.resolve_hierarchy_label(raw_eh):
+        eh = normalize_hierarchy_label(raw_eh)
+    return ef, eh
+
+
 def run_translation(
     terms: list[SourceTerm],
     translator: Translator,
@@ -249,9 +343,14 @@ def run_translation(
 ) -> dict[str, TranslationResult]:
     """Translate terms missing English, batched, cached, resumable.
 
-    ``only_ids`` restricts translation to those term ids (siblings/context still
-    use the full vocabulary). ``force`` bypasses the cache read so targeted ids
-    are always re-queried. Returns id -> TranslationResult."""
+    With cfg.predict_all, terms that already have source-data English are also
+    processed — for advisory expected_facet/expected_hierarchy predictions only
+    (separate prompt, separate `cls:` cache namespace; their English is never
+    produced or touched). ``only_ids`` restricts the run to those term ids in
+    either population (siblings/context still use the full vocabulary) and
+    implicitly enables the predict population for matching ids, so retranslate
+    refreshes predict rows without extra flags. ``force`` bypasses the cache
+    read so targeted ids are always re-queried. Returns id -> TranslationResult."""
     cfg = profile.translation
     # Facet options the LLM may predict: explicit override, else the profile's
     # accepted facet set. Cached on cfg so providers can read it uniformly.
@@ -259,76 +358,130 @@ def run_translation(
         cfg.facet_options = list(profile.facets.accepted)
     if not cfg.hierarchy_options:
         cfg.hierarchy_options = profile.facets.hierarchy_options()
-    stamp = f"tr:{cfg.prompt_version}:{cfg.model}:"
     siblings = compute_siblings(terms, cfg.max_siblings) if cfg.include_siblings else {}
     domain_map = {k.casefold(): v for k, v in (cfg.domain_by_root or {}).items()}
-
-    targets = missing_target(terms)
-    if only_ids is not None:
-        targets = [t for t in targets if t.id in only_ids]
-    if max_terms:
-        targets = targets[:max_terms]
-
     results: dict[str, TranslationResult] = {}
-    pending: list[SourceTerm] = []
-    for t in targets:
-        cached = None if force else (cache.get(stamp + t.id) if cache else None)
-        if cached:
-            results[t.id] = TranslationResult(**cached)
-        else:
-            pending.append(t)
 
+    def select(population: list[SourceTerm]) -> list[SourceTerm]:
+        if only_ids is not None:
+            population = [t for t in population if t.id in only_ids]
+        if max_terms:
+            population = population[:max_terms]
+        return population
+
+    def split_cached(targets, stamp):
+        pending: list[SourceTerm] = []
+        for t in targets:
+            cached = None if force else (cache.get(stamp + t.id) if cache else None)
+            if cached:
+                results[t.id] = TranslationResult(**cached)
+            else:
+                pending.append(t)
+        return pending
+
+    def run_batches(pending, stamp, call, make_items, to_result, label):
+        for start in range(0, len(pending), cfg.batch_size):
+            batch = pending[start : start + cfg.batch_size]
+            try:
+                raw = call(make_items(batch), cfg.context, cfg)
+            except Exception as exc:  # one bad batch shouldn't kill the run
+                progress(f"  {label} batch {start // cfg.batch_size + 1}: ERROR {exc}")
+                continue
+            by_id = {str(r.get("id")): r for r in raw if isinstance(r, dict)}
+            for t in batch:
+                res = to_result(t, by_id.get(t.id))
+                if res is None:
+                    continue
+                results[t.id] = res
+                if cache:
+                    cache.set(stamp + t.id, res.__dict__, flush=False)
+            if cache:
+                cache.flush()
+            progress(f"  {label} {min(start + cfg.batch_size, len(pending))}/{len(pending)}")
+
+    # ---- population 1: terms missing English -> full translation ----------
+    stamp = f"tr:{cfg.prompt_version}:{cfg.model}:"
+    targets = select(missing_target(terms))
+    pending = split_cached(targets, stamp)
     progress(
         f"translate: {len(targets) - len(pending)} cached, {len(pending)} to translate "
         f"in batches of {cfg.batch_size} (model={cfg.model})"
     )
 
-    for start in range(0, len(pending), cfg.batch_size):
-        batch = pending[start : start + cfg.batch_size]
-        items = [term_to_item(t, siblings.get(t.id, []), domain_map) for t in batch]
-        try:
-            raw = translator.translate_batch(items, cfg.context, cfg)
-        except Exception as exc:  # one bad batch shouldn't kill the run
-            progress(f"  batch {start // cfg.batch_size + 1}: ERROR {exc}")
-            continue
-        by_id = {str(r.get("id")): r for r in raw if isinstance(r, dict)}
-        for t in batch:
-            r = by_id.get(t.id)
-            if not r or not r.get("english"):
-                continue
-            # Keep expected_facet only if it is one of the offered options —
-            # anything else (hallucinated/free-text) is dropped, not propagated.
-            ef = str(r.get("expected_facet", "")).strip().lower()
-            if cfg.facet_options and ef not in {f.lower() for f in cfg.facet_options}:
-                ef = ""
-            # Keep expected_hierarchy only if it maps back to a profile anchor;
-            # store the cleaned label (what reviewers see and may edit).
-            eh = ""
-            raw_eh = str(r.get("expected_hierarchy", "")).strip()
-            if raw_eh and profile.facets.resolve_hierarchy_label(raw_eh):
-                eh = normalize_hierarchy_label(raw_eh)
-            res = TranslationResult(
-                id=t.id,
-                english=str(r.get("english", "")).strip(),
-                alternatives=[str(a) for a in r.get("alternatives", []) if a],
-                confidence=str(r.get("confidence", "")).lower() or "medium",
-                note=str(r.get("note", "")).strip(),
-                expected_facet=ef,
-                expected_hierarchy=eh,
+    def translation_result(t, r):
+        if not r or not r.get("english"):
+            return None
+        ef, eh = _validated_predictions(r, cfg, profile)
+        return TranslationResult(
+            id=t.id,
+            english=str(r.get("english", "")).strip(),
+            alternatives=[str(a) for a in r.get("alternatives", []) if a],
+            confidence=str(r.get("confidence", "")).lower() or "medium",
+            note=str(r.get("note", "")).strip(),
+            expected_facet=ef,
+            expected_hierarchy=eh,
+        )
+
+    run_batches(
+        pending, stamp, translator.translate_batch,
+        lambda batch: [term_to_item(t, siblings.get(t.id, []), domain_map) for t in batch],
+        translation_result, "translated",
+    )
+
+    # ---- population 2 (opt-in): terms WITH source English -> predictions only
+    # Enabled by cfg.predict_all, or implicitly when specific ids are requested
+    # (retranslate refreshes rows that already exist in the CSV). The english,
+    # target_source and alternatives of these terms are NEVER touched — see the
+    # apply_translations predict branch and the tiering provenance guard.
+    if cfg.predict_all or only_ids is not None:
+        if not (cfg.facet_options or cfg.hierarchy_options):
+            if cfg.predict_all:
+                progress(
+                    "predict: skipped — profile offers no facet or hierarchy options"
+                )
+        else:
+            pstamp = f"cls:{cfg.predict_prompt_version}:{cfg.model}:"
+            ptargets = select(has_target(terms))
+            ppending = split_cached(ptargets, pstamp)
+            if ptargets:
+                progress(
+                    f"predict: {len(ptargets) - len(ppending)} cached, "
+                    f"{len(ppending)} to predict in batches of {cfg.batch_size}"
+                )
+
+            def predict_result(t, r):
+                if not r:
+                    return None
+                ef, eh = _validated_predictions(r, cfg, profile)
+                return TranslationResult(
+                    id=t.id,
+                    english="",          # predictions only: english never produced
+                    alternatives=[],     # nor LLM lookup queries for trusted terms
+                    confidence=str(r.get("confidence", "")).lower() or "medium",
+                    note=str(r.get("note", "")).strip(),
+                    expected_facet=ef,
+                    expected_hierarchy=eh,
+                )
+
+            run_batches(
+                ppending, pstamp, translator.predict_batch,
+                lambda batch: [
+                    term_to_item(t, siblings.get(t.id, []), domain_map)
+                    | {"english": t.main_target_term}
+                    for t in batch
+                ],
+                predict_result, "predicted",
             )
-            results[t.id] = res
-            if cache:
-                cache.set(stamp + t.id, res.__dict__, flush=False)
-        if cache:
-            cache.flush()
-        progress(f"  translated {min(start + cfg.batch_size, len(pending))}/{len(pending)}")
     return results
 
 
 # ---- review CSV (the gate before lookup) ----------------------------------
 
 TRANSLATION_COLUMNS = [
-    "id", "source_term", "parents", "siblings",        # context (read-only)
+    # task: "translate" = term was missing English (approved_english applies);
+    # "predict" = term already has trusted source English — only the advisory
+    # expected_* fields apply, and approved_english is ignored. (read-only)
+    "id", "task", "source_term", "parents", "siblings",        # context (read-only)
     "llm_english", "alternatives", "confidence", "note",
     # ---- editable by the cataloguer ----
     # expected_facet / expected_hierarchy: LLM's advisory predictions — correct
@@ -360,8 +513,10 @@ def export_translations_csv(
             t = by_id.get(tid)
             if not t:
                 continue
+            predict = bool(t.main_target_term)   # term already has English
             w.writerow({
                 "id": tid,
+                "task": "predict" if predict else "translate",
                 "source_term": t.main_lang_term,
                 "parents": " > ".join(t.parents_source),
                 "siblings": ", ".join(siblings.get(tid, [])),
@@ -372,7 +527,9 @@ def export_translations_csv(
                 "expected_facet": res.expected_facet,
                 "expected_hierarchy": res.expected_hierarchy,
                 "accept": "yes",
-                "approved_english": res.english,
+                # predict rows carry no English decision; anything typed here is
+                # ignored by apply (source English is never overwritten).
+                "approved_english": "" if predict else res.english,
             })
             n += 1
     return n
@@ -434,15 +591,28 @@ def ingest_translations_csv(path: str | Path) -> dict[str, TranslationDecision]:
 
 def apply_translations(
     terms: list[SourceTerm], decisions: dict[str, TranslationDecision]
-) -> tuple[list[SourceTerm], int]:
-    """Return terms with approved English folded into main_target_term and
-    target_source tagged llm/human. Alternatives (deduped, minus the approved
-    label) and the advisory expected_facet ride along on the term for lookup/
-    tiering. Count of applied translations is returned."""
+) -> tuple[list[SourceTerm], int, int]:
+    """Fold accepted review-CSV decisions into the terms.
+
+    Translation branch (term was missing English): approved English becomes
+    main_target_term, target_source is tagged llm/human, and alternatives
+    (deduped, minus the approved label) plus the advisory expected_* ride along.
+
+    Predict branch (term already has source-data English): ONLY the advisory
+    expected_facet/expected_hierarchy are folded in. main_target_term,
+    target_source (stays "source_data") and target_alternatives are never
+    touched — keeping the invariant that source_data terms carry no
+    LLM-generated query strings, which is what the tiering provenance guard
+    ("LLM English never auto-accepts") relies on.
+
+    Returns (terms, n_translations_applied, n_predictions_applied)."""
     applied = 0
+    predicted = 0
     for t in terms:
         d = decisions.get(t.id)
-        if d and d.accept and d.approved_english and not t.main_target_term:
+        if not d or not d.accept:
+            continue
+        if d.approved_english and not t.main_target_term:
             t.main_target_term = d.approved_english
             t.target_source = d.source
             approved = d.approved_english.strip().casefold()
@@ -457,7 +627,11 @@ def apply_translations(
             t.expected_facet = d.expected_facet or None
             t.expected_hierarchy = d.expected_hierarchy or None
             applied += 1
-    return terms, applied
+        elif t.main_target_term and (d.expected_facet or d.expected_hierarchy):
+            t.expected_facet = d.expected_facet or None
+            t.expected_hierarchy = d.expected_hierarchy or None
+            predicted += 1
+    return terms, applied, predicted
 
 
 # ---- anomaly helper -------------------------------------------------------

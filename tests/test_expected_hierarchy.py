@@ -123,7 +123,7 @@ def test_csv_roundtrip_and_apply_carry_expected_hierarchy(tmp_path):
     decisions = ingest_translations_csv(csv_path)
     # ingest normalizes, so a cataloguer pasting the noisy AAT form also works
     assert decisions["1"].expected_hierarchy == "furnishings"
-    applied, _ = apply_translations(terms, decisions)
+    applied, _, _ = apply_translations(terms, decisions)
     assert applied[0].expected_hierarchy == "furnishings"
 
 

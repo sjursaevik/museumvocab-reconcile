@@ -75,6 +75,8 @@ translation:                     # optional step 1b (LLM English for terms missi
   temperature: 0
   include_siblings: true         # add same-parent siblings as disambiguation context
   max_siblings: 6
+  predict_all: false             # `translate --predict-all` overrides per run: also predict
+                                 # facet/hierarchy for terms that already have English
   prompt_version: v4             # bump to invalidate the translation cache
                                  # v3: response schema adds expected_facet (advisory)
                                  # v4: adds expected_hierarchy (advisory, from preferred_hierarchies labels)

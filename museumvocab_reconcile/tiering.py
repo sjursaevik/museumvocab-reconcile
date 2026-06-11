@@ -61,10 +61,18 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     # trips the match_langs review gate below).
     pool = accepted_cands
     match_langs = profile.languages.match_langs
+    lang_demoted: Candidate | None = None
     if match_langs and accepted_cands:
         in_ml = [c for c in accepted_cands if c.matched_lang in match_langs]
         if in_ml:
             pool = in_ml
+            # Transparency for the reviewer: if this preference just pushed a
+            # HIGHER-scored candidate out of the proposal pool, say so — the
+            # demoted candidate may well be the right concept whose label was
+            # attributed to an untracked language (e.g. Getty's untagged-label
+            # "und" quirk), and silence here hides it from adjudication.
+            if accepted_cands[0] is not in_ml[0]:
+                lang_demoted = accepted_cands[0]
     best = pool[0] if pool else ranked[0]
     # `prefer` mode: a facet is too coarse to rank, so within the pool favour a
     # candidate that also sits in a preferred sub-hierarchy. This steers WHICH
@@ -197,6 +205,14 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
         f"{facets.preferred_hierarchies[hier_anchor]} ({hier_anchor})"
         if hier_anchor else None
     )
+    # Disclose a match_langs demotion of a higher-scored candidate (see above).
+    if lang_demoted is not None and lang_demoted is not best:
+        reasons.append(
+            f"higher-scored candidate {lang_demoted.concept_id} "
+            f"{(lang_demoted.pref_label_target or lang_demoted.matched_label)!r} "
+            f"(score {lang_demoted.score:.0f}) not proposed: matched via language "
+            f"{lang_demoted.matched_lang!r}, outside match_langs {match_langs}"
+        )
     if proposed_hierarchy:
         reasons.append(f"in preferred hierarchy {proposed_hierarchy}")
     # Advisory note for the reviewer: does the LLM's facet prediction agree with

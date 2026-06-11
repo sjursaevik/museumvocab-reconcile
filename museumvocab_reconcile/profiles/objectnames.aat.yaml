@@ -59,7 +59,10 @@ source_schema:
 
 lookup:
   result_limit: 10          # candidates requested per reconciliation query
-  enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
+  enrich_top_n: 8          # enrich at most this many per term (speed + cache size lever);
+                           # raised from 5: reconcile's low-end scores are noisy and exactness
+                           # is only knowable after enrichment, so a tight cap can cut the
+                           # right concept before it can be recognised
   min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
   max_alternative_queries: 3   # fallback queries from LLM alternatives (0 = off)
   alternatives_trigger_score: 60   # run them unless a primary candidate scores at least this (0 = only when primaries find nothing)

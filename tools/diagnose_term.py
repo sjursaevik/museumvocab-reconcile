@@ -97,7 +97,11 @@ def main() -> None:
         ranked = [c for c in ranked if c.score >= lk.min_candidate_score]
     if lk.enrich_top_n:
         ranked = ranked[: lk.enrich_top_n]
-    enriched = adapter.enrich_candidates(ranked, profile.languages.target)
+    pl = list(dict.fromkeys(
+        profile.languages.trusted_exact_match_langs + profile.languages.match_langs
+    ))
+    enriched = adapter.enrich_candidates(ranked, profile.languages.target,
+                                         prefer_langs=pl)
 
     ml = profile.languages.match_langs
     print(f"\nmatch_langs: {ml or '-'}   anchors: "

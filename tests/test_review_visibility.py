@@ -47,16 +47,17 @@ def sari_candidates():
     return garments, samanid
 
 
-def test_match_langs_demotion_is_disclosed_in_reasons():
+def test_exact_outside_match_langs_is_proposed_and_flagged():
+    # Banding redesign: the exact-but-und garment now WINS the proposal (it is
+    # the likely-correct concept) instead of being demoted below the fuzzy
+    # in-language pottery hit; the match_langs flag plus the LLM-English guard
+    # keep it review-only. The old demotion behaviour hid the right answer.
     garments, samanid = sari_candidates()
     term = make_term(nb="Sari", en="saris", target_source="llm")
     out = classify(term, [garments, samanid], sari_profile())
-    assert out.best.concept_id == "300021733"   # demotion behaviour unchanged
+    assert out.best.concept_id == "300209968"
     assert out.tier == "review"
-    assert any(
-        "higher-scored candidate 300209968" in r and "outside match_langs" in r
-        for r in out.reasons
-    )
+    assert any("not in match_langs" in r for r in out.reasons)
 
 
 def test_runner_up_note_never_hides_the_top_candidate():
@@ -64,9 +65,11 @@ def test_runner_up_note_never_hides_the_top_candidate():
     term = make_term(nb="Sari", en="saris", target_source="llm")
     out = classify(term, [garments, samanid], sari_profile())
     note = _runner_up_note(out)
-    # the hidden-top bug: proposal used to be listed as its own alternative
-    assert "300209968" in note          # the true top candidate is visible
-    assert "300021733" not in note      # the proposal is not its own runner-up
+    # the hidden-top bug: proposal must never be listed as its own alternative;
+    # with the banding redesign the garment is the proposal, so the pottery
+    # style is the runner-up on display.
+    assert "300021733" in note          # the true runner-up is visible
+    assert "300209968" not in note      # the proposal is not its own runner-up
 
 
 def test_runner_up_note_unchanged_when_proposal_is_top():

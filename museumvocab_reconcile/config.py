@@ -59,6 +59,11 @@ class LanguageConfig:
     # (which surfaces as "und") from being proposed/auto-accepted on score alone.
     # Distinct from trusted_exact_match_langs, which only gates the exact path.
     match_langs: list[str] = field(default_factory=list)
+    # Trust an exact match on the TARGET-language preferred label (descriptor)
+    # when the query was the term's source-data English (human-catalogued, not
+    # LLM/edited). Implements the rule that a source-data English prefLabel
+    # exact can auto-accept; matches on alt labels still go to review.
+    trusted_target_pref_exact: bool = True
     # Variant language codes -> canonical code, so a source export tagged "NO"
     # is recognised as nb. Tolerates schema drift in level language codes.
     aliases: dict[str, str] = field(

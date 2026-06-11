@@ -96,16 +96,21 @@ def test_match_langs_allows_in_set_language():
 
 # ---- prefer in-match_langs candidates when selecting best -----------------
 
-def test_prefer_match_langs_proposes_real_match_over_higher_scored_und():
+def test_exact_und_proposed_over_fuzzy_but_flagged_review():
+    # Banding redesign: an EXACT match in an untracked language outranks any
+    # fuzzy hit (it is usually the right concept — loanwords), but the
+    # match_langs flag still forces review. The old rule proposed the fuzzy
+    # in-language candidate instead, which hid the likely-correct concept
+    # ('Sari' case: exact-de garment lost to fuzzy-en pottery).
     prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
     und = make_candidate(concept_id="U", score=80, is_exact=True, matched_lang="und",
                          facet="work_types")
     en = make_candidate(concept_id="E", score=50, is_exact=False, matched_lang="en",
                         facet="work_types")
     out = classify(make_term(), [und, en], prof)
-    assert out.best.concept_id == "E"          # the credible match is proposed
-    # higher-scored und rival shrinks the gap, so it routes to review (conservative)
+    assert out.best.concept_id == "U"
     assert out.tier == "review"
+    assert any("not in match_langs" in r for r in out.reasons)
 
 
 def test_prefer_match_langs_auto_accepts_when_real_match_leads():
@@ -118,13 +123,29 @@ def test_prefer_match_langs_auto_accepts_when_real_match_leads():
     assert out.tier == "auto_accept"
 
 
-def test_all_und_falls_back_and_gate_routes_to_review():
+def test_exact_und_best_routes_to_review():
+    # The realistic und case is an EXACT reassignment by _refine_match (fuzzy
+    # candidates keep matched_lang = query_lang, which is no language evidence
+    # at all — the flag therefore fires on exact matches only).
     prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
-    u1 = make_candidate(concept_id="U", score=80, matched_lang="und", facet="work_types")
+    u1 = make_candidate(concept_id="U", score=80, is_exact=True,
+                        matched_lang="und", facet="work_types")
     out = classify(make_term(), [u1], prof)
     assert out.best.concept_id == "U"
     assert out.tier == "review"
     assert any("match_langs" in r for r in out.reasons)
+
+
+def test_fuzzy_best_is_not_language_flagged():
+    # A fuzzy candidate's matched_lang is an echo of the query language; it
+    # must neither trip nor dodge the match_langs flag — the score/gap path
+    # alone decides.
+    prof = make_profile({"languages": {"match_langs": ["nb", "nn", "en"]}})
+    fuzzy = make_candidate(concept_id="F", score=80, is_exact=False,
+                           matched_lang="en", facet="work_types")
+    out = classify(make_term(), [fuzzy], prof)
+    assert out.tier == "auto_accept"
+    assert not any("match_langs" in r for r in out.reasons)
 
 
 def test_match_langs_warning_when_trusted_langs_omitted():

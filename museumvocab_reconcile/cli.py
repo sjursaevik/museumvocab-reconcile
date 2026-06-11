@@ -302,7 +302,14 @@ def cmd_lookup(args):
                     ranked = [c for c in ranked if c.score >= min_score]
                 if enrich_top_n:
                     ranked = ranked[:enrich_top_n]
-                enriched = adapter.enrich_candidates(ranked, lang_order.target)
+                # Attribution preference for _refine_match: trusted langs
+                # first, then the other tracked match languages (deduped).
+                pl = list(dict.fromkeys(
+                    lang_order.trusted_exact_match_langs + lang_order.match_langs
+                ))
+                enriched = adapter.enrich_candidates(
+                    ranked, lang_order.target, prefer_langs=pl
+                )
                 results.append({"term": asdict(t), "candidates": [asdict(c) for c in enriched]})
                 via = " (via LLM alternatives)" if used_alts and enriched else ""
                 print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> {len(enriched)} candidates{via}")

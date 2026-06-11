@@ -87,10 +87,11 @@ class IconclassAdapter(AuthorityAdapter):
             )
         return out
 
-    def enrich_candidates(self, candidates: list[Candidate], target_lang: str) -> list[Candidate]:
+    def enrich_candidates(self, candidates: list[Candidate], target_lang: str,
+                          prefer_langs: list[str] | None = None) -> list[Candidate]:
         """Extend the base behaviour: also recompute exactness against the
         fetched English label, since search returns only notations."""
-        candidates = super().enrich_candidates(candidates, target_lang)
+        candidates = super().enrich_candidates(candidates, target_lang, prefer_langs)
         for c in candidates:
             q_norm = c.raw.get("q_norm", "")
             label = c.pref_label_target or ""

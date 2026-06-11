@@ -122,9 +122,16 @@ class AuthorityAdapter(ABC):
     # ---- shared helpers ---------------------------------------------------
 
     def enrich_candidates(
-        self, candidates: list[Candidate], target_lang: str
+        self,
+        candidates: list[Candidate],
+        target_lang: str,
+        prefer_langs: list[str] | None = None,
     ) -> list[Candidate]:
-        """Fetch each candidate and fold facet/hierarchy/labels onto it."""
+        """Fetch each candidate and fold facet/hierarchy/labels onto it.
+
+        ``prefer_langs`` (typically trusted_exact_match_langs + match_langs, in
+        that order) biases the matched-language ATTRIBUTION when the same label
+        exists in several languages — see _refine_match."""
         for c in candidates:
             rec = self.fetch(c.concept_id)
             c.facet = rec.get("facet")
@@ -134,10 +141,12 @@ class AuthorityAdapter(ABC):
             c.cross_refs = rec.get("cross_refs", [])
             c.pref_label_target = rec.get("pref_labels", {}).get(target_lang)
             if c.query_term:
-                self._refine_match(c, rec)
+                self._refine_match(c, rec, prefer_langs)
         return candidates
 
-    def _refine_match(self, c: Candidate, rec: dict[str, Any]) -> None:
+    def _refine_match(
+        self, c: Candidate, rec: dict[str, Any], prefer_langs: list[str] | None = None
+    ) -> None:
         """Recompute matched_label / matched_lang / is_exact against the fetched
         record's language-tagged labels, rather than trusting the reconcile
         display name (always the English label) and the query language.
@@ -158,9 +167,25 @@ class AuthorityAdapter(ABC):
             pairs.extend((lang, v) for v in vals)
         exact = [(lang, val) for lang, val in pairs if self.normalise(val) == q]
         if exact:
-            # Among equal matches prefer the query language, then a stable order,
-            # so a word identical across languages is attributed to the query lang.
-            exact.sort(key=lambda lv: (0 if lv[0] == c.query_lang else 1, lv[0]))
+            # Attribution tie-break when the same surface form exists in several
+            # languages (e.g. 'sari' in en/es/it/fr/nl + 'Sari' in de): prefer the
+            # query language, then the caller's preferred languages IN ORDER
+            # (trusted nb/nn first, then the other match_langs), then a stable
+            # alphabetical order. The old query-lang-then-alphabetical rule
+            # attributed 'Sari' to 'de', tripping the match_langs demotion for a
+            # label that is equally an English one.
+            pl = prefer_langs or []
+            rank = {lang: i for i, lang in enumerate(pl)}
+
+            def key(lv: tuple[str, str]):
+                lang = lv[0]
+                return (
+                    0 if lang == c.query_lang else 1,
+                    rank.get(lang, len(pl)),
+                    lang,
+                )
+
+            exact.sort(key=key)
             lang, val = exact[0]
             c.matched_lang, c.matched_label, c.is_exact = lang, val, True
         else:

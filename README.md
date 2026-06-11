@@ -241,6 +241,24 @@ silently zeroed by an older build, delete `02_candidates.json` once (keep
   (only trusted-language exact matches) · `off` (everything → review).
 * `languages.trusted_exact_match_langs` — languages in which an exact label
   match is trusted enough to auto-accept (`[]` for Iconclass — see below).
+* `languages.trusted_target_pref_exact` (default true) — additionally trust an
+  exact match on the target-language **preferred** label when the query is the
+  term's source-data English (human-catalogued). Alt-label exacts and any
+  LLM/edited English stay review-tier.
+* `languages.match_langs` — languages a candidate's *matched* label may be in
+  without being flagged for review. Three things to know about how matching
+  works since the match-quality redesign: (1) proposal ordering is **banded** —
+  exact match in a `match_langs` language, then exact match outside it, then
+  fuzzy — and the reconcile score only ranks within a band, because its
+  absolute values are noise at the low end (an exact descriptor hit can score
+  below fuzzy relatives); (2) an exact match in an untracked language is
+  *proposed* (it is usually the right concept, e.g. loanwords) but flagged and
+  never auto-accepted; (3) a fuzzy candidate's `matched_lang` is just an echo
+  of the query language, so the flag applies to exact matches only. Label
+  attribution prefers `trusted_exact_match_langs`, then `match_langs`, when the
+  same surface form exists in several languages — so keep `match_langs` tight
+  (`[nb, nn, en]`); widening it to fr/de etc. is no longer needed to rescue
+  shared-form matches and only weakens the false-friend review flag.
 
 ## Adapters
 

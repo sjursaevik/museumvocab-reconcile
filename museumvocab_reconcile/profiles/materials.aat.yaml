@@ -1,6 +1,6 @@
 # Profile: art technique/medium vocabulary -> Getty AAT
 # This reproduces the settings the technique pilot converged on.
-profile: techniques
+profile: materials
 authority: aat
 
 languages:
@@ -12,8 +12,9 @@ languages:
   trusted_exact_match_langs: [nb, nn]   # AAT carries Nasjonalmuseet-contributed nb/nn altLabels
 
 facets:
-  accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
-  accepted: [materials, formats]
+  accept_all: true            # when true, any returned facet is accepted and `accepted` is ignored
+  accepted: [materials, formats, work_types]
+  hierarchy_mode: off 
   linked_art_property:
     techniques:   {target: production, prop: classified_as}
     work_types:   {target: object,     prop: classified_as}
@@ -51,7 +52,7 @@ review:
 
 translation:                     # optional step 1b (LLM English for terms missing one)
   provider: anthropic
-  model: claude-sonnet-4-6       # pin the model; change as needed. (sjur: start with haiu-4-5, retry with sonnet-4-6 if needed)
+  model: claude-haiku-4-5       # pin the model; change as needed. (sjur: start with haiu-4-5, retry with sonnet-4-6 if needed)
   context: "Norwegian museum conservation material terms, for cataloguing and matching against the Getty AAT"
   batch_size: 15                 # terms per API call (cost control)
   max_tokens: 4000

@@ -21,11 +21,41 @@ from .config import Profile
 from .model import Candidate, ClassifiedTerm, SourceTerm
 
 
-def _trusted_exact(c: Candidate, profile: Profile) -> bool:
+def _norm(text: str | None) -> str:
+    return " ".join((text or "").strip().casefold().split())
+
+
+def _trusted_exact(c: Candidate, profile: Profile, term: SourceTerm) -> bool:
+    langs = profile.languages
+    if c.is_exact and c.matched_lang in langs.trusted_exact_match_langs:
+        return True
+    # Source-data English descriptor rule: an exact match on the TARGET-language
+    # PREFERRED label, where the query is the term's human-catalogued English
+    # (target_source == "source_data"), is trusted. LLM/edited English never
+    # qualifies (caught earlier by the review-only guard as well), and an exact
+    # hit on a mere alt label stays review-tier — alt labels include used-for
+    # and variant terms that can be broader than the concept.
     return (
-        c.is_exact
-        and c.matched_lang in profile.languages.trusted_exact_match_langs
+        langs.trusted_target_pref_exact
+        and term.target_source == "source_data"
+        and c.is_exact
+        and c.query_lang == langs.target
+        and c.matched_lang == langs.target
+        and bool(c.pref_label_target)
+        and _norm(c.matched_label) == _norm(c.pref_label_target)
     )
+
+
+def _match_band(c: Candidate, match_langs: list[str]) -> int:
+    """Proposal-ordering band: 0 = exact match on a tracked-language label,
+    1 = exact match outside match_langs, 2 = fuzzy. Reconcile score only ranks
+    WITHIN a band — its absolute values are noise at the low end (real case:
+    the exact-en descriptor hit for 'Dollhouse' scored 9.5 below three fuzzy
+    relatives at 11.8-17.5), and a fuzzy candidate's matched_lang is just an
+    echo of the query language, so it carries no language evidence at all."""
+    if c.is_exact:
+        return 0 if (not match_langs or c.matched_lang in match_langs) else 1
+    return 2
 
 
 def _cross_facet_ambiguity(candidates: list[Candidate], top: Candidate, gap: float) -> bool:
@@ -54,17 +84,23 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     # accepted, fall back to the overall top — it gets flagged and routed to
     # review below, never auto-accepted.
     accepted_cands = [c for c in ranked if facets.is_accepted(c.facet)]
-    # Among accepted candidates, prefer those whose MATCHED label is in an
-    # accepted match-language: a coincidental hit in an untracked language
-    # (matched_lang "und") shouldn't be proposed over a real nb/nn/en match even
-    # if it scored higher. If none qualify, keep the accepted set (the best then
-    # trips the match_langs review gate below).
-    pool = accepted_cands
+    # Proposal ordering: exactness first, score within band (_match_band). An
+    # exact label match in a tracked language beats any fuzzy hit regardless of
+    # reconcile score; an exact match in an untracked language still beats fuzzy
+    # (it is usually the right concept — loanwords) but trips the match_langs
+    # review flag below. Trust/tier semantics are decided separately.
     match_langs = profile.languages.match_langs
-    if match_langs and accepted_cands:
-        in_ml = [c for c in accepted_cands if c.matched_lang in match_langs]
-        if in_ml:
-            pool = in_ml
+    pool = sorted(
+        accepted_cands,
+        key=lambda c: (_match_band(c, match_langs), -c.score),
+    )
+    # Transparency for the reviewer: if banding pushed the HIGHEST-scORED
+    # accepted candidate out of the proposal slot, disclose it with the reason.
+    band_demoted: Candidate | None = (
+        accepted_cands[0]
+        if pool and accepted_cands and pool[0] is not accepted_cands[0]
+        else None
+    )
     best = pool[0] if pool else ranked[0]
     # `prefer` mode: a facet is too coarse to rank, so within the pool favour a
     # candidate that also sits in a preferred sub-hierarchy. This steers WHICH
@@ -86,7 +122,7 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
         facets.hierarchy_mode == "prefer"
         and facets.preferred_hierarchies
         and pool
-        and not _trusted_exact(pool[0], profile)
+        and not _trusted_exact(pool[0], profile, term)
     ):
         in_hier = [c for c in pool if facets.hierarchy_hit(c)]
         if in_hier:
@@ -111,7 +147,7 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
         if (
             pool
             and not hier_steered
-            and not _trusted_exact(pool[0], profile)
+            and not _trusted_exact(pool[0], profile, term)
             and best.facet != term.expected_facet
         ):
             near = [
@@ -127,7 +163,7 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     rival_scores = [c.score for c in ranked if c is not best]
     gap = (best.score - max(rival_scores)) if rival_scores else float("inf")
     facet_ok = facets.is_accepted(best.facet)
-    exact = _trusted_exact(best, profile) and aa.trusted_lang_exact_match
+    exact = _trusted_exact(best, profile, term) and aa.trusted_lang_exact_match
     reasons: list[str] = []
 
     # ---- hard review conditions (independent of auto-accept mode) ----------
@@ -138,10 +174,12 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             f"best candidate facet {best.facet!r} not in accepted set"
             + ("" if facets.accept_all else f" {facets.accepted}")
         )
-    match_langs = profile.languages.match_langs
-    if match_langs and best.matched_lang not in match_langs:
-        # `und` = matched a label in a language we don't track (e.g. a French
-        # prefLabel an English query coincided with). Don't trust it on score.
+    if match_langs and best.is_exact and best.matched_lang not in match_langs:
+        # `und`/foreign = the query exactly matched a label in a language we
+        # don't track (e.g. a French prefLabel an English query coincided
+        # with). Propose it — it is often the right concept — but never trust
+        # it past review. Fuzzy candidates carry no language evidence (their
+        # matched_lang is just the query language), so they are not flagged.
         reasons.append(
             f"best candidate matched via language {best.matched_lang!r}, "
             f"not in match_langs {match_langs}"
@@ -197,6 +235,19 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
         f"{facets.preferred_hierarchies[hier_anchor]} ({hier_anchor})"
         if hier_anchor else None
     )
+    # Disclose when banding demoted the highest-scored candidate (see above).
+    if band_demoted is not None and band_demoted is not best:
+        why = (
+            f"exact match via {band_demoted.matched_lang!r}, outside "
+            f"match_langs {match_langs}"
+            if band_demoted.is_exact
+            else "fuzzy match, outranked by an exact label match"
+        )
+        reasons.append(
+            f"higher-scored candidate {band_demoted.concept_id} "
+            f"{(band_demoted.pref_label_target or band_demoted.matched_label)!r} "
+            f"(score {band_demoted.score:.0f}) not proposed: {why}"
+        )
     if proposed_hierarchy:
         reasons.append(f"in preferred hierarchy {proposed_hierarchy}")
     # Advisory note for the reviewer: does the LLM's facet prediction agree with

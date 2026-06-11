@@ -36,6 +36,7 @@ from .translate import (
     flag_anomalies,
     get_translator,
     ingest_translations_csv,
+    has_target,
     missing_target,
     run_translation,
     select_retranslate_ids,
@@ -81,14 +82,23 @@ def cmd_prep(args):
 
 def cmd_translate(args):
     profile = _load_profile(args.profile)
+    if getattr(args, "predict_all", False):
+        profile.translation.predict_all = True
     terms = [SourceTerm(**d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
     targets = missing_target(terms)
     n_target = len(targets if not args.max_terms else targets[: args.max_terms])
+    n_predict = 0
+    if profile.translation.predict_all:
+        predict_pop = has_target(terms)
+        n_predict = len(predict_pop if not args.max_terms else predict_pop[: args.max_terms])
+    bs = profile.translation.batch_size
     print(
         f"translate: {len(terms)} terms, {len(targets)} missing English"
         + (f"; will translate up to {args.max_terms}" if args.max_terms else f"; will translate {len(targets)}")
-        + f". Estimated API calls ~{-(-n_target // profile.translation.batch_size)} "
-        f"(batch_size={profile.translation.batch_size})."
+        + (f"; will predict facet/hierarchy for {n_predict} terms with existing English"
+           if profile.translation.predict_all else "")
+        + f". Estimated API calls ~{-(-n_target // bs) + -(-n_predict // bs)} "
+        f"(batch_size={bs})."
     )
     if args.dry_run:
         print("translate: --dry-run set, no API calls made.")
@@ -145,7 +155,7 @@ def cmd_translate_apply(args):
     _load_profile(args.profile)  # validate profile early
     terms = [SourceTerm(**d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
     decisions = ingest_translations_csv(args.translations)
-    terms, applied = apply_translations(terms, decisions)
+    terms, applied, predicted = apply_translations(terms, decisions)
     Path(args.out).write_text(
         json.dumps([asdict(t) for t in terms], ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -154,8 +164,10 @@ def cmd_translate_apply(args):
     n_human = sum(1 for t in terms if t.target_source == "human")
     print(
         f"translate-apply: applied {applied} translations "
-        f"({n_llm} llm, {n_human} human-edited) -> {args.out}  "
-        f"(now run: lookup --inp {args.out})"
+        f"({n_llm} llm, {n_human} human-edited)"
+        + (f" and {predicted} facet/hierarchy predictions for terms with existing English"
+           if predicted else "")
+        + f" -> {args.out}  (now run: lookup --inp {args.out})"
     )
 
 
@@ -166,10 +178,22 @@ def gather_candidates(
     result_limit: int,
     min_score: float = 0.0,
     max_alternative_queries: int = 3,
+    alternatives_trigger_score: float = 60.0,
 ) -> tuple[list[Candidate], bool]:
     """Run the primary (source/target) reconcile queries for one term, falling
-    back to the term's LLM alternative labels only when the primary queries
-    yield no candidate at or above ``min_score``.
+    back to the term's LLM alternative labels when the primaries found nothing
+    CONVINCING — no candidate at or above ``alternatives_trigger_score``.
+
+    The trigger is deliberately independent of ``min_score`` (the pre-enrich
+    junk filter): with min_score 0, a single low-scored fuzzy hit used to
+    suppress the fallback entirely (real case: 'Sari' -> only 'Sari (Samanid
+    pottery style)' @33 blocked the 'sari' alternative query that finds the
+    correct 'saris (garments)'). A weak hit is not evidence the primary
+    queries succeeded. Set alternatives_trigger_score to 0 to restore the
+    strict behaviour (fallback only when the primaries return nothing usable).
+
+    Alternatives only ADD candidates; ranking stays score-based, so a strong
+    primary result is never displaced by the extra queries.
 
     Returns (candidates, used_alternatives). Alternative-surfaced candidates are
     ordinary lookup results — provenance stays visible via Candidate.query_lang/
@@ -199,8 +223,12 @@ def gather_candidates(
             add(c)
 
     used_alternatives = False
-    usable = [c for c in cands.values() if c.score >= min_score] if min_score else cands.values()
-    if not usable and term.target_alternatives and max_alternative_queries > 0:
+    trigger = max(min_score, alternatives_trigger_score)
+    convincing = (
+        [c for c in cands.values() if c.score >= trigger]
+        if trigger else cands.values()
+    )
+    if not convincing and term.target_alternatives and max_alternative_queries > 0:
         used_alternatives = True
         for alt in term.target_alternatives[:max_alternative_queries]:
             for c in adapter.search(alt, languages.target, limit=result_limit):
@@ -264,6 +292,7 @@ def cmd_lookup(args):
                     t, adapter, lang_order, result_limit,
                     min_score=min_score,
                     max_alternative_queries=lk.max_alternative_queries,
+                    alternatives_trigger_score=lk.alternatives_trigger_score,
                 )
                 # Score filter + top-N cap BEFORE enrichment: each enrichment
                 # fetches a concept and walks its hierarchy, so this bounds both
@@ -273,7 +302,14 @@ def cmd_lookup(args):
                     ranked = [c for c in ranked if c.score >= min_score]
                 if enrich_top_n:
                     ranked = ranked[:enrich_top_n]
-                enriched = adapter.enrich_candidates(ranked, lang_order.target)
+                # Attribution preference for _refine_match: trusted langs
+                # first, then the other tracked match languages (deduped).
+                pl = list(dict.fromkeys(
+                    lang_order.trusted_exact_match_langs + lang_order.match_langs
+                ))
+                enriched = adapter.enrich_candidates(
+                    ranked, lang_order.target, prefer_langs=pl
+                )
                 results.append({"term": asdict(t), "candidates": [asdict(c) for c in enriched]})
                 via = " (via LLM alternatives)" if used_alts and enriched else ""
                 print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> {len(enriched)} candidates{via}")
@@ -378,7 +414,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("prep"); s.add_argument("source"); s.add_argument("--out", default="01_prepared.json"); s.set_defaults(func=cmd_prep)
-    s = sub.add_parser("translate"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--out", default="01b_translations.csv"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0, help="translate at most N terms (smoke test)"); s.add_argument("--dry-run", action="store_true", help="report how many terms would be translated, make no API calls"); s.set_defaults(func=cmd_translate)
+    s = sub.add_parser("translate"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--out", default="01b_translations.csv"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0, help="translate at most N terms (smoke test)"); s.add_argument("--dry-run", action="store_true", help="report how many terms would be translated, make no API calls"); s.add_argument("--predict-all", action="store_true", help="also run terms that ALREADY have English through the LLM, for advisory expected_facet/expected_hierarchy predictions only (their English is never touched)"); s.set_defaults(func=cmd_translate)
     s = sub.add_parser("translate-apply"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--translations", default="01b_translations.csv"); s.add_argument("--out", default="01b_translated.json"); s.set_defaults(func=cmd_translate_apply)
     s = sub.add_parser("flag-anomalies"); s.add_argument("--inp", default="01b_translations.csv"); s.add_argument("--out", default="01b_anomalies.csv"); s.set_defaults(func=cmd_flag_anomalies)
     s = sub.add_parser("retranslate"); s.add_argument("--inp", default="01_prepared.json", help="prepared terms (for context)"); s.add_argument("--translations", default="01b_translations.csv", help="existing translations to refresh"); s.add_argument("--out", default="01b_translations.csv", help="merged output (defaults to overwriting --translations)"); s.add_argument("--confidence", default="low,medium", help="comma list of confidences to re-translate"); s.add_argument("--ids", default="", help="comma list of specific term ids to re-translate"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0); s.add_argument("--dry-run", action="store_true", help="report selection, make no API calls"); s.set_defaults(func=cmd_retranslate)

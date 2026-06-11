@@ -1,8 +1,13 @@
 """Lookup-stage tests for gather_candidates: LLM-alternatives fallback.
 
 Pins the fallback contract:
-  * alternatives are queried ONLY when the primary (nb/en) queries yield no
-    candidate at or above min_score — they widen recall, never re-rank;
+  * alternatives are queried when the primary (nb/en) queries yield no
+    CONVINCING candidate — none at or above alternatives_trigger_score — and
+    they only widen recall, never re-rank (a strong primary is undisturbed);
+  * a single weak fuzzy hit must NOT suppress the fallback (regression: 'Sari'
+    -> 'Sari (Samanid pottery style)' @33 blocked the 'sari' query that finds
+    the correct 'saris (garments)');
+  * trigger 0 = strict mode (fallback only when nothing >= min_score);
   * the number of alternative queries is capped (max_alternative_queries,
     0 = disabled);
   * when the same concept is found by both an en and an nb query, the nb
@@ -34,13 +39,37 @@ class FakeAdapter:
 LANGS = make_profile().languages
 
 
-def test_alternatives_not_queried_when_primary_hits():
-    adapter = FakeAdapter({"ting": [make_candidate(concept_id="A", score=40)]})
+def test_alternatives_not_queried_when_primary_convincing():
+    adapter = FakeAdapter({"ting": [make_candidate(concept_id="A", score=90)]})
     term = make_term(nb="ting", en="thing", target_alternatives=["object", "item"])
     cands, used = gather_candidates(term, adapter, LANGS, result_limit=5)
     assert not used
     assert [c.concept_id for c in cands] == ["A"]
     assert ("object", "en") not in adapter.calls
+
+
+def test_weak_fuzzy_hit_does_not_suppress_fallback():
+    # The 'Sari' regression: primaries return only a junk fuzzy hit (33);
+    # the alternative query must still run, and it recovers the right concept
+    # without displacing anything (ranking stays score-based downstream).
+    adapter = FakeAdapter({
+        "Sari": [make_candidate(concept_id="POTTERY", score=33)],
+        "sari": [make_candidate(concept_id="GARMENT", score=100,
+                                matched_lang="en", is_exact=True)],
+    })
+    term = make_term(nb="Sari", en="saris", target_source="llm",
+                     target_alternatives=["sari"])
+    cands, used = gather_candidates(term, adapter, LANGS, result_limit=5)
+    assert used
+    assert {c.concept_id for c in cands} == {"POTTERY", "GARMENT"}
+
+
+def test_trigger_zero_restores_strict_behaviour():
+    adapter = FakeAdapter({"ting": [make_candidate(concept_id="A", score=33)]})
+    term = make_term(nb="ting", target_source="llm", target_alternatives=["alt"])
+    _, used = gather_candidates(term, adapter, LANGS, result_limit=5,
+                                alternatives_trigger_score=0)
+    assert not used  # one hit >= min_score(0) suppresses fallback in strict mode
 
 
 def test_alternatives_queried_when_primary_empty():

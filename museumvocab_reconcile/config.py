@@ -59,6 +59,11 @@ class LanguageConfig:
     # (which surfaces as "und") from being proposed/auto-accepted on score alone.
     # Distinct from trusted_exact_match_langs, which only gates the exact path.
     match_langs: list[str] = field(default_factory=list)
+    # Trust an exact match on the TARGET-language preferred label (descriptor)
+    # when the query was the term's source-data English (human-catalogued, not
+    # LLM/edited). Implements the rule that a source-data English prefLabel
+    # exact can auto-accept; matches on alt labels still go to review.
+    trusted_target_pref_exact: bool = True
     # Variant language codes -> canonical code, so a source export tagged "NO"
     # is recognised as nb. Tolerates schema drift in level language codes.
     aliases: dict[str, str] = field(
@@ -211,10 +216,15 @@ class LookupConfig:
     enrich_top_n: int = 5
     # Drop candidates scoring below this before enriching (0 = keep all).
     min_candidate_score: float = 0.0
-    # When the primary (source/target) queries yield no usable candidate, query
-    # at most this many of the term's LLM alternative labels as a fallback
-    # (0 disables the fallback entirely).
+    # When the primary (source/target) queries yield no CONVINCING candidate,
+    # query at most this many of the term's LLM alternative labels as a
+    # fallback (0 disables the fallback entirely).
     max_alternative_queries: int = 3
+    # A primary candidate counts as convincing when its reconcile score reaches
+    # this threshold; below it, the alternative queries also run (they only add
+    # candidates, never displace a primary result). 0 = strict mode: fall back
+    # only when the primaries return nothing at or above min_candidate_score.
+    alternatives_trigger_score: float = 60.0
 
 
 @dataclass
@@ -243,6 +253,16 @@ class TranslationConfig:
     # `expected_hierarchy` (advisory, one level finer than expected_facet).
     # Usually derived at runtime from facets.preferred_hierarchies.
     hierarchy_options: list[str] = field(default_factory=list)
+    # When true, terms that ALREADY have source-data English also pass through
+    # the LLM — for expected_facet/expected_hierarchy predictions ONLY. Their
+    # English, target_source and (absence of) alternatives are never touched.
+    # Off by default (it scales LLM volume to the whole vocabulary); enable per
+    # run with `translate --predict-all`.
+    predict_all: bool = False
+    # Version counter for the prediction-only prompt and its cache entries
+    # (namespace `cls:`). Independent of prompt_version so prediction prompt
+    # changes never invalidate cached translations, and vice versa.
+    predict_prompt_version: str = "v1"
     # Optional: top-level (root) parent term -> domain phrase for the prompt, so
     # a term under "Arkitektonisk" is read as architecture, "Billedkunst" as
     # visual arts, etc. Unmapped roots are passed through verbatim.

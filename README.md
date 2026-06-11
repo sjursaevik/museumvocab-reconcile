@@ -125,10 +125,13 @@ Two further pieces of LLM metadata ride along through the gate (both prunable
 in the CSV before `translate-apply`):
 
 - **`alternatives`** become *fallback* lookup queries: when a term's primary
-  nb/en queries return no candidate at or above `lookup.min_candidate_score`,
+  nb/en queries return no CONVINCING candidate — none scoring at least
+  `lookup.alternatives_trigger_score` (default 60; 0 = strict mode, fall back
+  only when the primaries return nothing above `min_candidate_score`) —
   `lookup` tries up to `lookup.max_alternative_queries` of them (default 3,
-  0 disables). Anything they surface follows the same trust rule as the main
-  LLM English: review only, never auto-accept.
+  0 disables). The extra queries only add candidates, so a strong primary
+  result is never displaced. Anything they surface follows the same trust rule
+  as the main LLM English: review only, never auto-accept.
 - **`expected_facet`** is the LLM's prediction of the term's facet (one of the
   profile's `facets.accepted` names; invalid predictions are dropped). It is
   **advisory only**: `classify` may use it to pick which of several *near-tied*
@@ -148,8 +151,22 @@ in the CSV before `translate-apply`):
   shown in the `expected_hierarchy` column of `03b_review.csv` next to
   `proposed_hierarchy`. In profiles without `preferred_hierarchies` the field
   is simply not requested — `expected_facet` remains the coarse fallback there.
-  Note the prediction only exists for terms that went through the translate
-  step (those missing source-data English).
+  Note the prediction normally only exists for terms that went through the
+  translate step (those missing source-data English). `translate --predict-all`
+  closes that gap: terms that **already have** source-data English are also run
+  through the LLM — with a separate prediction-only prompt that shows their
+  existing English as context — producing **only** `expected_facet` /
+  `expected_hierarchy`. Their English is never produced, changed, or queried
+  differently: `main_target_term`, `target_source` (stays `source_data`) and
+  the absence of LLM `alternatives` are untouched, so the trust rules above are
+  unaffected. These rows appear in `01b_translations.csv` with `task: predict`
+  and a blank `approved_english` (anything typed there is ignored), behind the
+  same `accept` gate; `translate-apply` folds in only the predictions.
+  Prediction cache entries live in a separate `cls:` namespace with their own
+  `predict_prompt_version`, so enabling or tweaking this never invalidates
+  cached translations. Off by default (it scales LLM volume from the
+  missing-English subset to the whole vocabulary); `retranslate` refreshes
+  predict rows automatically when they match the selection.
 
 Because the response schema changed for these fields, `prompt_version` is now
 `v4` (the bump invalidates older cached translations, which lack them).
@@ -224,6 +241,24 @@ silently zeroed by an older build, delete `02_candidates.json` once (keep
   (only trusted-language exact matches) · `off` (everything → review).
 * `languages.trusted_exact_match_langs` — languages in which an exact label
   match is trusted enough to auto-accept (`[]` for Iconclass — see below).
+* `languages.trusted_target_pref_exact` (default true) — additionally trust an
+  exact match on the target-language **preferred** label when the query is the
+  term's source-data English (human-catalogued). Alt-label exacts and any
+  LLM/edited English stay review-tier.
+* `languages.match_langs` — languages a candidate's *matched* label may be in
+  without being flagged for review. Three things to know about how matching
+  works since the match-quality redesign: (1) proposal ordering is **banded** —
+  exact match in a `match_langs` language, then exact match outside it, then
+  fuzzy — and the reconcile score only ranks within a band, because its
+  absolute values are noise at the low end (an exact descriptor hit can score
+  below fuzzy relatives); (2) an exact match in an untracked language is
+  *proposed* (it is usually the right concept, e.g. loanwords) but flagged and
+  never auto-accepted; (3) a fuzzy candidate's `matched_lang` is just an echo
+  of the query language, so the flag applies to exact matches only. Label
+  attribution prefers `trusted_exact_match_langs`, then `match_langs`, when the
+  same surface form exists in several languages — so keep `match_langs` tight
+  (`[nb, nn, en]`); widening it to fr/de etc. is no longer needed to rescue
+  shared-form matches and only weakens the false-friend review flag.
 
 ## Adapters
 

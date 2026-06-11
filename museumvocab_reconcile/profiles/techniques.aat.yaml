@@ -52,7 +52,8 @@ lookup:
   result_limit: 5          # candidates requested per reconciliation query
   enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
   min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
-  max_alternative_queries: 3   # fallback queries from LLM alternatives when primary queries find nothing (0 = off)
+  max_alternative_queries: 3   # fallback queries from LLM alternatives (0 = off)
+  alternatives_trigger_score: 60   # run them unless a primary candidate scores at least this (0 = only when primaries find nothing)
 
 review:
   include_auto_accepted: false   # also write auto-accepted terms into 03b_review.csv
@@ -66,6 +67,8 @@ translation:                     # optional step 1b (LLM English for terms missi
   temperature: 0
   include_siblings: true         # add same-parent siblings as disambiguation context
   max_siblings: 6
+  predict_all: false             # `translate --predict-all` overrides per run: also predict
+                                 # facet/hierarchy for terms that already have English
   prompt_version: v4             # bump to invalidate the translation cache
                                  # v3: response schema adds expected_facet (advisory)
                                  # v4: adds expected_hierarchy (advisory, from preferred_hierarchies labels)

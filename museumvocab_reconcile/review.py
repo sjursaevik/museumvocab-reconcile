@@ -29,9 +29,15 @@ COLUMNS = [
 
 
 def _runner_up_note(ct: ClassifiedTerm, n: int = 3) -> str:
+    """Top-n other candidates, score order. The proposal is excluded by
+    IDENTITY, not by position: steering and the match_langs preference can make
+    `best` something other than candidates[0], and slicing [1:] then hid the
+    true top-scored candidate from the review row while duplicating the
+    proposal (the 'Sari' bug)."""
+    others = [c for c in ct.candidates if c is not ct.best][:n]
     alts = [
         f"{c.concept_id}={c.pref_label_target or c.matched_label}({c.score:.0f})"
-        for c in ct.candidates[1 : n + 1]
+        for c in others
     ]
     return "; ".join(alts)
 

@@ -88,6 +88,7 @@ def main() -> None:
         term, adapter, profile.languages, lk.result_limit,
         min_score=lk.min_candidate_score,
         max_alternative_queries=lk.max_alternative_queries,
+        alternatives_trigger_score=lk.alternatives_trigger_score,
     )
     print(f"\n{len(cands)} candidate(s) from queries"
           + (" (alternatives fallback used)" if used_alts else ""))

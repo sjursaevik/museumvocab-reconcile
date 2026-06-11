@@ -61,7 +61,8 @@ lookup:
   result_limit: 10          # candidates requested per reconciliation query
   enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
   min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
-  max_alternative_queries: 3   # fallback queries from LLM alternatives when primary queries find nothing (0 = off)
+  max_alternative_queries: 3   # fallback queries from LLM alternatives (0 = off)
+  alternatives_trigger_score: 60   # run them unless a primary candidate scores at least this (0 = only when primaries find nothing)
 
 review:
   include_auto_accepted: true   # also write auto-accepted terms into 03b_review.csv

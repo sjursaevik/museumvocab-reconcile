@@ -125,10 +125,13 @@ Two further pieces of LLM metadata ride along through the gate (both prunable
 in the CSV before `translate-apply`):
 
 - **`alternatives`** become *fallback* lookup queries: when a term's primary
-  nb/en queries return no candidate at or above `lookup.min_candidate_score`,
+  nb/en queries return no CONVINCING candidate — none scoring at least
+  `lookup.alternatives_trigger_score` (default 60; 0 = strict mode, fall back
+  only when the primaries return nothing above `min_candidate_score`) —
   `lookup` tries up to `lookup.max_alternative_queries` of them (default 3,
-  0 disables). Anything they surface follows the same trust rule as the main
-  LLM English: review only, never auto-accept.
+  0 disables). The extra queries only add candidates, so a strong primary
+  result is never displaced. Anything they surface follows the same trust rule
+  as the main LLM English: review only, never auto-accept.
 - **`expected_facet`** is the LLM's prediction of the term's facet (one of the
   profile's `facets.accepted` names; invalid predictions are dropped). It is
   **advisory only**: `classify` may use it to pick which of several *near-tied*

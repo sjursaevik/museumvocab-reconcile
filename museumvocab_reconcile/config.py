@@ -211,10 +211,15 @@ class LookupConfig:
     enrich_top_n: int = 5
     # Drop candidates scoring below this before enriching (0 = keep all).
     min_candidate_score: float = 0.0
-    # When the primary (source/target) queries yield no usable candidate, query
-    # at most this many of the term's LLM alternative labels as a fallback
-    # (0 disables the fallback entirely).
+    # When the primary (source/target) queries yield no CONVINCING candidate,
+    # query at most this many of the term's LLM alternative labels as a
+    # fallback (0 disables the fallback entirely).
     max_alternative_queries: int = 3
+    # A primary candidate counts as convincing when its reconcile score reaches
+    # this threshold; below it, the alternative queries also run (they only add
+    # candidates, never displace a primary result). 0 = strict mode: fall back
+    # only when the primaries return nothing at or above min_candidate_score.
+    alternatives_trigger_score: float = 60.0
 
 
 @dataclass

@@ -178,10 +178,22 @@ def gather_candidates(
     result_limit: int,
     min_score: float = 0.0,
     max_alternative_queries: int = 3,
+    alternatives_trigger_score: float = 60.0,
 ) -> tuple[list[Candidate], bool]:
     """Run the primary (source/target) reconcile queries for one term, falling
-    back to the term's LLM alternative labels only when the primary queries
-    yield no candidate at or above ``min_score``.
+    back to the term's LLM alternative labels when the primaries found nothing
+    CONVINCING — no candidate at or above ``alternatives_trigger_score``.
+
+    The trigger is deliberately independent of ``min_score`` (the pre-enrich
+    junk filter): with min_score 0, a single low-scored fuzzy hit used to
+    suppress the fallback entirely (real case: 'Sari' -> only 'Sari (Samanid
+    pottery style)' @33 blocked the 'sari' alternative query that finds the
+    correct 'saris (garments)'). A weak hit is not evidence the primary
+    queries succeeded. Set alternatives_trigger_score to 0 to restore the
+    strict behaviour (fallback only when the primaries return nothing usable).
+
+    Alternatives only ADD candidates; ranking stays score-based, so a strong
+    primary result is never displaced by the extra queries.
 
     Returns (candidates, used_alternatives). Alternative-surfaced candidates are
     ordinary lookup results — provenance stays visible via Candidate.query_lang/
@@ -211,8 +223,12 @@ def gather_candidates(
             add(c)
 
     used_alternatives = False
-    usable = [c for c in cands.values() if c.score >= min_score] if min_score else cands.values()
-    if not usable and term.target_alternatives and max_alternative_queries > 0:
+    trigger = max(min_score, alternatives_trigger_score)
+    convincing = (
+        [c for c in cands.values() if c.score >= trigger]
+        if trigger else cands.values()
+    )
+    if not convincing and term.target_alternatives and max_alternative_queries > 0:
         used_alternatives = True
         for alt in term.target_alternatives[:max_alternative_queries]:
             for c in adapter.search(alt, languages.target, limit=result_limit):
@@ -276,6 +292,7 @@ def cmd_lookup(args):
                     t, adapter, lang_order, result_limit,
                     min_score=min_score,
                     max_alternative_queries=lk.max_alternative_queries,
+                    alternatives_trigger_score=lk.alternatives_trigger_score,
                 )
                 # Score filter + top-N cap BEFORE enrichment: each enrichment
                 # fetches a concept and walks its hierarchy, so this bounds both

@@ -333,6 +333,30 @@ def cmd_lookup(args):
 def cmd_classify(args):
     profile = _load_profile(args.profile)
     raw = json.loads(Path(args.inp).read_text("utf-8"))
+    # ---- error gate -------------------------------------------------------
+    # lookup records persistent HTTP failures as {"error": ...} entries with an
+    # empty candidate list, and its resume logic retries them. If classify ran
+    # over such entries it would tier them "no_match" ("no candidates
+    # returned") — silently converting a rate-limit blip into a permanent miss,
+    # the exact failure mode the lookup error handling exists to prevent.
+    errored = [e for e in raw if e.get("error")]
+    if errored:
+        ids = ", ".join(e["term"]["id"] for e in errored[:5])
+        more = f" (+{len(errored) - 5} more)" if len(errored) > 5 else ""
+        if not args.skip_errors:
+            raise SystemExit(
+                f"classify: {len(errored)} term(s) in {args.inp} carry a lookup "
+                f"ERROR (e.g. ids {ids}{more}). These are transient failures, "
+                f"not no-matches — re-run lookup to retry them (resume skips "
+                f"completed terms), then classify again. To classify anyway "
+                f"WITHOUT these terms, pass --skip-errors."
+            )
+        print(
+            f"classify: WARNING --skip-errors set; dropping {len(errored)} "
+            f"errored term(s) (ids {ids}{more}) from the output. They will be "
+            f"absent from review and assembly until lookup retries them."
+        )
+        raw = [e for e in raw if not e.get("error")]
     out = []
     for entry in raw:
         term = SourceTerm(**entry["term"])
@@ -419,7 +443,7 @@ def main(argv=None):
     s = sub.add_parser("flag-anomalies"); s.add_argument("--inp", default="01b_translations.csv"); s.add_argument("--out", default="01b_anomalies.csv"); s.set_defaults(func=cmd_flag_anomalies)
     s = sub.add_parser("retranslate"); s.add_argument("--inp", default="01_prepared.json", help="prepared terms (for context)"); s.add_argument("--translations", default="01b_translations.csv", help="existing translations to refresh"); s.add_argument("--out", default="01b_translations.csv", help="merged output (defaults to overwriting --translations)"); s.add_argument("--confidence", default="low,medium", help="comma list of confidences to re-translate"); s.add_argument("--ids", default="", help="comma list of specific term ids to re-translate"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0); s.add_argument("--dry-run", action="store_true", help="report selection, make no API calls"); s.set_defaults(func=cmd_retranslate)
     s = sub.add_parser("lookup"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--out", default="02_candidates.json"); s.add_argument("--cache", default="cache.json"); s.add_argument("--limit", type=int, default=None, help="candidates per reconcile query (overrides profile lookup.result_limit)"); s.add_argument("--enrich-top-n", type=int, default=None, help="enrich at most N candidates per term (overrides profile lookup.enrich_top_n)"); s.add_argument("--min-score", type=float, default=None, help="drop candidates below this score before enriching (overrides profile lookup.min_candidate_score)"); s.add_argument("--max-terms", type=int, default=0, help="process at most N terms (0 = all); useful for a quick smoke test"); s.add_argument("--sleep", type=float, default=0.2, help="seconds to wait between terms (politeness)"); s.add_argument("--flush-every", type=int, default=10, help="write the output file every N terms"); s.add_argument("--max-retries", type=int, default=4, help="retry attempts for transient HTTP errors (429/499/5xx)"); s.add_argument("--retry-backoff", type=float, default=1.5, help="exponential backoff base for retries"); s.add_argument("--request-delay", type=float, default=0.0, help="seconds to pause before every HTTP request (throttle if the server rate-limits)"); s.set_defaults(func=cmd_lookup)
-    s = sub.add_parser("classify"); s.add_argument("--inp", default="02_candidates.json"); s.add_argument("--out", default="03_classified.json"); s.set_defaults(func=cmd_classify)
+    s = sub.add_parser("classify"); s.add_argument("--inp", default="02_candidates.json"); s.add_argument("--out", default="03_classified.json"); s.add_argument("--skip-errors", action="store_true", help="drop terms whose lookup errored instead of aborting (they stay un-classified until lookup retries them)"); s.set_defaults(func=cmd_classify)
     s = sub.add_parser("review-export"); s.add_argument("--inp", default="03_classified.json"); s.add_argument("--out", default="03b_review.csv"); s.add_argument("--include-auto", action="store_true", help="also export auto-accepted terms (also settable via profile review.include_auto_accepted)"); s.set_defaults(func=cmd_review_export)
     s = sub.add_parser("assemble"); s.add_argument("--inp", default="03_classified.json"); s.add_argument("--review", default="03b_review.csv"); s.add_argument("--out", default="04_final.json"); s.add_argument("--linkedart", default="04_linkedart.json"); s.add_argument("--csv", default="04_final.csv", help="human-readable CSV of the final records"); s.add_argument("--log", default="log.txt"); s.set_defaults(func=cmd_assemble)
 

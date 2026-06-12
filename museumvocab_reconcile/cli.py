@@ -310,7 +310,13 @@ def cmd_lookup(args):
                 enriched = adapter.enrich_candidates(
                     ranked, lang_order.target, prefer_langs=pl
                 )
-                results.append({"term": asdict(t), "candidates": [asdict(c) for c in enriched]})
+                results.append({
+                    "term": asdict(t),
+                    "candidates": [asdict(c) for c in enriched],
+                    # provenance: candidates were (also) surfaced by the LLM
+                    # alternative-label fallback queries this run
+                    "used_alternatives": used_alts,
+                })
                 via = " (via LLM alternatives)" if used_alts and enriched else ""
                 print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> {len(enriched)} candidates{via}")
             except Exception as exc:  # network or parse error: record and continue
@@ -399,7 +405,13 @@ def cmd_assemble(args):
             f"{n_review_tier} review/no-match term(s) will be excluded."
         )
     stats = assemble(
-        classified, decisions, profile, args.out, args.log, args.linkedart, out_csv=args.csv
+        classified, decisions, profile, args.out, args.log, args.linkedart,
+        out_csv=args.csv,
+        run_info={
+            "profile": args.profile,
+            "classified": args.inp,
+            "review_csv": args.review if review_exists else "(none)",
+        },
     )
     print(f"assemble: {stats} -> {args.out}")
 
@@ -413,6 +425,7 @@ def _classified_to_dict(ct: ClassifiedTerm) -> dict:
         "best_id": ct.best.concept_id if ct.best else None,
         "tier": ct.tier,
         "reasons": ct.reasons,
+        "match_type": ct.match_type,
         "proposed_facet": ct.proposed_facet,
         "proposed_aat_facet": ct.proposed_aat_facet,
         "proposed_hierarchy": ct.proposed_hierarchy,
@@ -425,7 +438,8 @@ def _dict_to_classified(d: dict) -> ClassifiedTerm:
     best = next((c for c in cands if c.concept_id == d.get("best_id")), cands[0] if cands else None)
     return ClassifiedTerm(
         term=SourceTerm(**d["term"]), candidates=cands, best=best,
-        tier=d["tier"], reasons=d["reasons"], proposed_facet=d.get("proposed_facet"),
+        tier=d["tier"], reasons=d["reasons"], match_type=d.get("match_type", ""),
+        proposed_facet=d.get("proposed_facet"),
         proposed_aat_facet=d.get("proposed_aat_facet"),
         proposed_hierarchy=d.get("proposed_hierarchy"),
         proposed_target_term=d.get("proposed_target_term"),

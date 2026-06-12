@@ -72,8 +72,8 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     if not candidates:
         return ClassifiedTerm(
             term=term, candidates=[], best=None, tier="no_match",
-            reasons=["no candidates returned"], proposed_facet=None,
-            proposed_target_term=None,
+            reasons=["no candidates returned"], match_type="no_candidates",
+            proposed_facet=None, proposed_target_term=None,
         )
 
     ranked = sorted(candidates, key=lambda c: c.score, reverse=True)
@@ -165,15 +165,25 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     facet_ok = facets.is_accepted(best.facet)
     exact = _trusted_exact(best, profile, term) and aa.trusted_lang_exact_match
     reasons: list[str] = []
+    # Structured counterpart of `reasons`: the first (dominant) hard review
+    # condition to fire wins; auto-accept branches set their basis below.
+    match_type = ""
+
+    def code(value: str) -> None:
+        nonlocal match_type
+        if not match_type:
+            match_type = value
 
     # ---- hard review conditions (independent of auto-accept mode) ----------
     if review_if.cross_facet_ambiguity and _cross_facet_ambiguity(ranked, best, aa.min_score_gap):
         reasons.append("cross-facet ambiguity among near-tied candidates")
+        code("ambiguous_cross_facet")
     if not facet_ok:
         reasons.append(
             f"best candidate facet {best.facet!r} not in accepted set"
             + ("" if facets.accept_all else f" {facets.accepted}")
         )
+        code("facet_not_accepted")
     if match_langs and best.is_exact and best.matched_lang not in match_langs:
         # `und`/foreign = the query exactly matched a label in a language we
         # don't track (e.g. a French prefLabel an English query coincided
@@ -184,6 +194,7 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             f"best candidate matched via language {best.matched_lang!r}, "
             f"not in match_langs {match_langs}"
         )
+        code("match_lang_untracked")
     # LLM English is a LOOKUP QUERY ONLY, never a trust signal: if the best
     # candidate was surfaced by a target-language query whose label did not come
     # from the source data (target_source llm/human — i.e. the translate step,
@@ -198,31 +209,45 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             f"surfaced via {term.target_source} {profile.languages.target!r} query "
             f"{best.query_term!r} — review only, never auto-accept"
         )
+        # Dominant over the other flags: it is the trust rule, not a symptom.
+        match_type = "llm_surfaced"
         exact = False  # an exact hit on a generated label is coincidence, not trust
 
     # ---- auto-accept decision, gated by mode -------------------------------
     if aa.mode == "off":
         tier = "review"
         reasons.insert(0, "auto_accept.mode=off: all terms routed to review")
+        code("mode_off")
     elif reasons:  # a hard review condition already fired
         tier = "review"
+        code("review_other")  # safety net; the conditions above set their own code
     elif exact and facet_ok:
         tier = "auto_accept"
         reasons.append(f"exact match in trusted language ({best.matched_lang})")
+        # Basis: trusted-language altLabel exact (nb_exact / nn_exact) vs the
+        # source-data English prefLabel descriptor rule.
+        code(
+            f"{best.matched_lang}_exact"
+            if best.matched_lang in profile.languages.trusted_exact_match_langs
+            else f"source_{profile.languages.target}_pref_exact"
+        )
     elif aa.mode == "full" and facet_ok and best.score >= aa.min_score and gap >= aa.min_score_gap:
         tier = "auto_accept"
         reasons.append(
             f"score {best.score:.1f} >= {aa.min_score} and gap {gap:.1f} >= {aa.min_score_gap}"
         )
+        code("score_gap")
     else:
         tier = "review"
         if aa.mode == "exact_only":
             reasons.append("auto_accept.mode=exact_only and no trusted exact match")
+            code("mode_exact_only")
         else:
             reasons.append(
                 f"below thresholds (score {best.score:.1f}, gap "
                 f"{'inf' if gap == float('inf') else f'{gap:.1f}'})"
             )
+            code("below_threshold")
 
     # broader-only flag is advisory metadata for the reviewer
     if review_if.broader_only and best.facet and not exact and best.score < aa.min_score:
@@ -282,7 +307,7 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
     )
     return ClassifiedTerm(
         term=term, candidates=ranked, best=best, tier=tier, reasons=reasons,
-        proposed_facet=best.facet, proposed_aat_facet=best.aat_facet,
+        match_type=match_type, proposed_facet=best.facet, proposed_aat_facet=best.aat_facet,
         proposed_hierarchy=proposed_hierarchy,
         proposed_target_term=proposed_target,
     )

@@ -81,6 +81,14 @@ class ClassifiedTerm:
     tier: str                    # "auto_accept" | "review" | "no_match"
     reasons: list[str]           # human-readable explanation of the tier decision
     proposed_facet: str | None
+    # Structured, aggregatable code for WHY the term landed in its tier (the
+    # prose lives in `reasons`). Auto-accept basis: "nb_exact" / "nn_exact" /
+    # "source_en_pref_exact" / "score_gap". Review basis (dominant condition):
+    # "llm_surfaced" / "ambiguous_cross_facet" / "facet_not_accepted" /
+    # "match_lang_untracked" / "below_threshold" / "mode_off" /
+    # "mode_exact_only". No candidates: "no_candidates". Feeds the log's
+    # distributions and longer-term threshold tuning.
+    match_type: str = ""
     proposed_aat_facet: str | None = None    # live AAT facet "<name> (<id>)" of the best candidate
     proposed_hierarchy: str | None = None    # preferred sub-hierarchy "<label> (<id>)" the best sits in
     proposed_target_term: str | None = None  # proposed English/target label

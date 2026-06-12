@@ -142,5 +142,6 @@ def ingest_review_csv(path: str | Path) -> dict[str, Decision]:
             chosen_target_term=(row.get("chosen_target_term") or "").strip() or None,
             chosen_facet=(row.get("chosen_facet") or "").strip() or None,
             notes=(row.get("notes") or "").strip(),
+            raw_accept=accept_raw,
         )
     return decisions

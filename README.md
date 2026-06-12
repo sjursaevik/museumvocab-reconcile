@@ -1,11 +1,11 @@
 # museumvocab-reconcile
 
-Links a museum's controlled-vocabulary terms to concepts in an external
+This command-line tool links a museum's controlled-vocabulary terms to concepts in an external
 authority — the [Getty Art & Architecture Thesaurus (AAT)](https://www.getty.edu/research/tools/vocabularies/aat/)
 or [Iconclass](https://iconclass.org/) — with a human reviewing every uncertain
 match, and emits the result as [Linked Art](https://linked.art/) JSON-LD.
 
-It was built at Nasjonalmuseet (Oslo) to reconcile MuseumPlus vocabularies
+It was built at the Norwegian National Museum of Art Architecture ad design to reconcile MuseumPlus vocabularies
 (techniques, materials, object names, subjects) but is not specific to one
 vocabulary: a **profile** (a YAML file) describes each source-vocabulary →
 authority mapping, so onboarding a new vocabulary means writing a profile, not
@@ -21,7 +21,7 @@ A few terms used throughout:
 
 ## How matching is trusted (the core idea)
 
-Nasjonalmuseet contributed the Norwegian Bokmål (`nb`) and Nynorsk (`nn`) labels
+Nasjonalmuseet contributed the Norwegian Bokmål (`nb`) and Nynorsk (`nn`) labels for techniques and materials
 that now live in Getty AAT. Because those labels are human-catalogued and known
 to be ours, an **exact match on a Norwegian label is the strongest possible
 signal** — strong enough to accept automatically. Everything else is treated
@@ -29,7 +29,7 @@ with more caution:
 
 * An exact `nb`/`nn` label match (in an accepted facet) → **auto-accept**.
 * An exact match on the term's existing, human-catalogued English → auto-accept.
-* A strong score with a clear gap to the runner-up → auto-accept.
+* A strong score with a clear gap to the runner-up → auto-accept. (can be turned off)
 * Anything weaker, ambiguous, out-of-facet, or surfaced only via machine-
   translated English → **sent to a human for review**.
 

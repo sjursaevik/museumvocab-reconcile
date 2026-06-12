@@ -34,9 +34,31 @@ def _linked_art_snippet(uri: str, facet: str | None, label: str, profile: Profil
     }
 
 
+def _is_untouched_auto(ct: ClassifiedTerm, decision: Decision) -> bool:
+    """True when an auto-accepted row was exported for visibility (accept pre-
+    filled 'auto') and the reviewer changed nothing — so it is still a machine
+    decision, not a human one. Any edit (a different accept token, a different
+    chosen id/facet/target, or a note) makes it a real human review.
+    """
+    if ct.tier != "auto_accept" or decision.raw_accept != "auto":
+        return False
+    proposed_id = ct.best.concept_id if ct.best else ""
+    return (
+        (decision.chosen_id or proposed_id) == proposed_id
+        and (decision.chosen_facet or ct.proposed_facet) == ct.proposed_facet
+        and (decision.chosen_target_term or ct.proposed_target_term)
+        == ct.proposed_target_term
+        and not decision.notes
+    )
+
+
 def build_final_record(ct: ClassifiedTerm, decision: Decision | None, profile: Profile) -> dict[str, Any] | None:
     term = ct.term
-    if ct.tier == "auto_accept" and decision is None:
+    # An auto-accepted term keeps auto_accept provenance when it has no decision
+    # OR when its decision is the untouched 'auto' pre-fill (include_auto_accepted
+    # exports auto rows into the review CSV; passing them through unedited must
+    # not silently relabel them as human_review).
+    if ct.tier == "auto_accept" and (decision is None or _is_untouched_auto(ct, decision)):
         chosen_id = ct.best.concept_id if ct.best else ""
         chosen_uri = ct.best.uri if ct.best else ""
         chosen_facet = ct.proposed_facet

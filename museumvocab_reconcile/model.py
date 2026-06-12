@@ -104,3 +104,9 @@ class Decision:
     chosen_target_term: str | None
     chosen_facet: str | None
     notes: str = ""
+    # The raw `accept` cell as read from the CSV, lowercased. Lets assemble tell
+    # the machine's "auto" pre-fill (an auto-accepted row exported only for
+    # visibility, left untouched) apart from an explicit human "yes" — so an
+    # untouched auto-accept keeps its auto_accept provenance instead of being
+    # miscounted as human_review.
+    raw_accept: str = ""

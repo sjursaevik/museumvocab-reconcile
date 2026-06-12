@@ -268,6 +268,9 @@ languages:
 facets:
   accept_all: false            # true = accept any facet (ignores `accepted`)
   accepted: [techniques, work_types, materials, formats, design_motifs]
+  hierarchy_mode: prefer       # prefer | off — favours candidates in a
+                               # preferred sub-hierarchy when proposing a match
+  # (bare `off` is fine; it's read as the mode, not a YAML boolean)
   linked_art_property:         # facet -> where its match attaches in Linked Art
     materials: {target: object, prop: made_of}
     techniques: {target: production, prop: classified_as}

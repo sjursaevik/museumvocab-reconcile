@@ -41,6 +41,22 @@ VALID_AUTO_ACCEPT_MODES = {"full", "exact_only", "off"}
 VALID_HIERARCHY_MODES = {"prefer", "off"}
 
 
+def _unyaml_bool(value: Any) -> Any:
+    """Recover a string mode that YAML turned into a bool.
+
+    In YAML 1.1 the bare words off/on/no/yes/false/true are booleans, so
+    `mode: off` arrives here as Python ``False`` rather than the string "off",
+    which then fails enum validation with a confusing ``got False``. Map a
+    boolean back to the word the user almost certainly wrote so quoting stays
+    optional; non-bools pass through untouched.
+    """
+    if value is True:
+        return "on"
+    if value is False:
+        return "off"
+    return value
+
+
 @dataclass
 class LanguageConfig:
     source: str = "nb"
@@ -107,6 +123,7 @@ class FacetConfig:
     linked_art_property: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.hierarchy_mode = _unyaml_bool(self.hierarchy_mode)
         if self.hierarchy_mode not in VALID_HIERARCHY_MODES:
             raise ValueError(
                 f"facets.hierarchy_mode must be one of {sorted(VALID_HIERARCHY_MODES)}, "
@@ -175,6 +192,7 @@ class AutoAcceptConfig:
     trusted_lang_exact_match: bool = True
 
     def __post_init__(self) -> None:
+        self.mode = _unyaml_bool(self.mode)
         if self.mode not in VALID_AUTO_ACCEPT_MODES:
             raise ValueError(
                 f"auto_accept.mode must be one of {sorted(VALID_AUTO_ACCEPT_MODES)}, "

@@ -1,307 +1,339 @@
 # museumvocab-reconcile
 
-Generalises the technique-vocabulary → Getty AAT pipeline into a reusable tool
-for reconciling MuseumPlus museum vocabularies (materials, object names,
-subjects, …) against authority sources (AAT, Iconclass, later ULAN/TGN/Wikidata).
+Links a museum's controlled-vocabulary terms to concepts in an external
+authority — the [Getty Art & Architecture Thesaurus (AAT)](https://www.getty.edu/research/tools/vocabularies/aat/)
+or [Iconclass](https://iconclass.org/) — with a human reviewing every uncertain
+match, and emits the result as [Linked Art](https://linked.art/) JSON-LD.
 
-Three design goals drive the structure:
+It was built at Nasjonalmuseet (Oslo) to reconcile MuseumPlus vocabularies
+(techniques, materials, object names, subjects) but is not specific to one
+vocabulary: a **profile** (a YAML file) describes each source-vocabulary →
+authority mapping, so onboarding a new vocabulary means writing a profile, not
+changing code.
 
-1. **Generalisable** — a fixed engine + per-vocabulary YAML *profiles* +
-   pluggable *authority adapters*. Onboarding a new vocabulary means writing a
-   profile, not editing code.
-2. **Transparent** — every stage writes a versioned, human-readable artifact;
-   the log records the decision-relevant config (thresholds, facet and language
-   rules), tier/match-type distributions, and review outcomes.
-3. **Human-in-the-loop at each step** — the pipeline is re-entrant; you can stop
-   after any stage, inspect or hand-edit its artifact, and resume. Human
-   overrides live in an external CSV, separate from machine output.
+A few terms used throughout:
+* **authority** — the external reference vocabulary you link *to* (AAT, Iconclass).
+* **reconcile** — search the authority for the concept that matches a source term.
+* **facet** — the authority's own top-level category for a concept (e.g. AAT's
+  *Materials*, *Activities*). A profile lists which facets it will accept.
+* **tier** — the confidence verdict the tool assigns each term: `auto_accept`,
+  `review`, or `no_match`.
 
-## Pipeline (re-entrant stages)
+## How matching is trusted (the core idea)
+
+Nasjonalmuseet contributed the Norwegian Bokmål (`nb`) and Nynorsk (`nn`) labels
+that now live in Getty AAT. Because those labels are human-catalogued and known
+to be ours, an **exact match on a Norwegian label is the strongest possible
+signal** — strong enough to accept automatically. Everything else is treated
+with more caution:
+
+* An exact `nb`/`nn` label match (in an accepted facet) → **auto-accept**.
+* An exact match on the term's existing, human-catalogued English → auto-accept.
+* A strong score with a clear gap to the runner-up → auto-accept.
+* Anything weaker, ambiguous, out-of-facet, or surfaced only via machine-
+  translated English → **sent to a human for review**.
+
+Machine-translated English (the optional translate step) is only ever a *search
+query* to surface candidates a Norwegian query missed — a match found that way
+**never** auto-accepts, even on an exact hit.
+
+> **Worked example.** The term *Bladgull* ("gold leaf") is queried in Norwegian,
+> matches the `nb` label on AAT concept *gold leaf* exactly, and that concept
+> sits in the accepted *Materials* facet → auto-accepted, emitted as
+> `made_of: gold leaf`. No human needed.
+
+For an authority with no Norwegian (Iconclass), a profile simply pivots on a
+different trusted language — this is per-profile config, not hardcoded.
+
+## The pipeline
+
+The work is split into stages. Each stage reads the previous stage's file and
+writes the next, so you can **stop after any stage, inspect or hand-edit its
+output, and resume** — the human-in-the-loop happens by editing these files.
 
 ```
-prep           source.json                        -> 01_prepared.json
-(translate)    01_prepared.json                   -> 01b_translations.csv   (optional, step 1b)
-(translate-apply) + 01b_translations.csv          -> 01b_translated.json
-lookup         01_prepared.json (or 01b_…)        -> 02_candidates.json   (network; run on your machine)
-classify       02_candidates.json                 -> 03_classified.json
-review-export  03_classified.json                 -> 03b_review.csv        (edit by hand)
-assemble       03_classified.json + 03b_review.csv -> 04_final.json (+ 04_final.csv, 04_linkedart.json, log.txt)
+prep            source export        -> 01_prepared.json
+ ├ (optional translate steps, below) -> 01b_translated.json
+lookup          prepared terms       -> 02_candidates.json     (needs network)
+classify        candidates           -> 03_classified.json
+review-export   classified terms     -> 03b_review.csv         (edit by hand)
+assemble        classified + review  -> 04_final.json, 04_final.csv,
+                                        04_linkedart.json, log.txt
 ```
 
-Each stage reads the previous artifact and writes the next, so you can stop
-after any stage, inspect or hand-edit its artifact, and resume. The optional
-translation step (1b) is described under *LLM-recommended English* below.
+Only `lookup` (and the optional `translate`) reach the network: `lookup` calls
+the authority, `translate` calls an LLM. Every other stage runs fully offline,
+so they work anywhere even when a CI sandbox or office network can't reach
+Getty. Run `lookup`/`translate` wherever outbound network is available.
 
-### Why lookup runs on your machine
-The authority endpoints (Getty, Iconclass) aren't reachable from every
-environment — some networks and CI sandboxes block them — so `lookup` (and the
-`translate` step, which calls an LLM API) are the parts you run where outbound
-network is available. Everything else (`prep`, `classify`, `review-export`,
-`assemble`, `flag-anomalies`) is fully offline.
+## Install
 
-## Install & run
-
-Install once from the repo root (the folder containing `pyproject.toml`):
+From the repo root (the folder with `pyproject.toml`):
 
 ```bash
 pip install -e .
 ```
 
-Profiles ship inside the package, so you can pass a profile by **bare name**
-from any folder — `--profile techniques.aat.yaml` resolves to the bundled
-profile. Pass a real path only when using your own custom profile.
+Profiles ship inside the package, so you can pass one by **bare name** from any
+folder (`--profile techniques.aat.yaml`); pass a real path only for your own
+custom profile. The bundled profiles are `techniques.aat.yaml`,
+`materials.aat.yaml`, `objectnames.aat.yaml`, and `subjects.iconclass.yaml`.
 
-### bash / macOS / Linux
+## Run a vocabulary through, start to finish
 
-```bash
-P=techniques.aat.yaml
-museumvocab-reconcile --profile $P prep   ConObjectTechniqueVgr.json
-museumvocab-reconcile --profile $P lookup
-museumvocab-reconcile --profile $P classify
-museumvocab-reconcile --profile $P review-export        # edit 03b_review.csv
-museumvocab-reconcile --profile $P assemble
-```
+The stage files are read and written **relative to the current folder**, so
+work in a clean directory. `--profile` must come *before* the stage name.
 
 ### PowerShell (Windows)
 
-PowerShell variables use `$name = "value"` (with the `$` and spaces). Bash-style
-`P=...` does **not** set a variable — if `$P` is empty, `--profile` swallows the
-next word and you get `invalid choice: ...`. Verify a variable by typing `$P`.
+PowerShell variables are `$name = "value"`. Bash-style `P=...` does **not** set
+one — if `$P` is empty, `--profile` swallows the next word and you get
+`invalid choice`. Check a variable by typing `$P`.
 
 ```powershell
 $P = "techniques.aat.yaml"
 museumvocab-reconcile --profile $P prep ConObjectTechniqueVgr.json
 museumvocab-reconcile --profile $P lookup
 museumvocab-reconcile --profile $P classify
-museumvocab-reconcile --profile $P review-export        # edit 03b_review.csv
+museumvocab-reconcile --profile $P review-export     # edit 03b_review.csv, then:
 museumvocab-reconcile --profile $P assemble
 ```
 
-Or inline, without a variable:
+### bash / macOS / Linux
 
-```powershell
-museumvocab-reconcile --profile techniques.aat.yaml prep ConObjectTechniqueVgr.json
+```bash
+P=techniques.aat.yaml
+museumvocab-reconcile --profile $P prep ConObjectTechniqueVgr.json
+museumvocab-reconcile --profile $P lookup
+museumvocab-reconcile --profile $P classify
+museumvocab-reconcile --profile $P review-export     # edit 03b_review.csv, then:
+museumvocab-reconcile --profile $P assemble
 ```
 
-Notes for Windows:
-* The source file (`ConObjectTechniqueVgr.json`) and the stage outputs
-  (`01_prepared.json`, `02_candidates.json`, …, `cache.json`) are read/written
-  relative to your **current folder**, so `cd` to a clean working folder first.
-* Only `lookup` needs network (it calls Getty/Iconclass). `prep`, `classify`,
-  and `assemble` are offline.
-* If you see `invalid choice`, `$P` was empty. If you see `Profile not found`,
-  the error lists the bundled profile names you can pass.
+`museumvocab-reconcile --help` lists every stage; `… <stage> --help` explains
+one stage and its options. Common errors: `invalid choice` means `$P` was empty;
+`Profile not found` lists the bundled names you can pass.
 
-## Optional step 1b: LLM-recommended English (translate)
+`prep` cleans known MuseumPlus export quirks as explicit steps: it strips literal
+`"NULL"` cells, undoes CSV-quoting artifacts (e.g. `""våtplate""`), and de-dupes
+rows. The highest non-empty level in each row is its main term; lower levels are
+its parents.
 
-Many source terms lack an English main term. The optional `translate` step asks
-an LLM for a recommended English label for those terms, using the Norwegian
-term plus its parent chain and same-parent siblings as context. It needs the
-`anthropic` package and an API key:
+## Reviewing matches (`03b_review.csv`)
+
+This is the human's main task. `review-export` writes one row per term that
+needs a decision (everything not auto-accepted; add `--include-auto` to also see
+auto-accepted rows and override them). Context columns show the machine's
+proposal — `proposed_id`, `proposed_facet`, `matched_term`, `best_score`,
+`reasons` (with runner-up candidates), and the structured `match_type`. The LLM
+advisory predictions `expected_facet`/`expected_hierarchy` appear next to the
+proposal for comparison.
+
+Edit only these columns, then save as CSV:
+
+| column | what to put |
+|---|---|
+| `accept` | `yes` to keep the match, `no`/blank to drop the term |
+| `chosen_id` | a different authority id, if you're overriding the proposal |
+| `chosen_target_term` | a corrected English/target label, if needed |
+| `chosen_facet` | a corrected facet, if needed |
+| `notes` | free text, carried into the output |
+
+A term with `accept` blank or `no` is **excluded** from the final output. On
+auto-accepted rows the `accept` cell is pre-filled `auto`; leaving it untouched
+keeps the machine's decision, and the term stays counted as auto-accepted (only
+an actual edit makes it a human review).
+
+If you edit in Excel, save as **CSV UTF-8** — the file is read tolerantly
+(UTF-8/BOM, Windows-1252, and `;` or `,` delimiters all work), but saving as
+UTF-8 keeps Norwegian characters correct.
+
+## Final output
+
+`assemble` keeps every auto-accepted term plus every term you accepted in
+review, and writes:
+
+* **`04_final.json`** — one record per kept term. Alongside the source term and
+  the chosen authority id/link/facet, each record carries provenance:
+  `decision_source` (`auto_accept` | `human_review`), `match_type` (why it was
+  tiered — e.g. `nb_exact`, `score_gap`), `matched_lang`, `translation_source`
+  (`source_data` | `llm` | `human`), and `recommended_translation` /
+  `recommended_authority` flags marking values worth writing back to MuseumPlus.
+* **`04_final.csv`** — the same records flattened for Excel.
+* **`04_linkedart.json`** — a Linked Art fragment per match, attached to the
+  right slot (e.g. `made_of` on the object, `classified_as` on the production
+  event) from the profile's facet → property map.
+* **`log.txt`** — a run report: the decision-relevant config used, tier and
+  auto-accept-basis distributions, the matched-language breakdown of the final
+  records, review outcomes (accepted / rejected / undecided, and how often a
+  reviewer overrode the proposal), translation provenance, and the no-match
+  terms.
+
+> If review/no-match terms exist but no edited `03b_review.csv` is present,
+> `assemble` warns and keeps only the auto-accepted terms — run `review-export`,
+> edit it, then re-run.
+
+## Optional: machine-recommended English (the translate steps)
+
+Many source terms have no English label. The `translate` step asks an LLM for a
+recommended English term (using the Norwegian term plus its parent and sibling
+context) so that `lookup` has an English query to try as well. It needs extra
+dependencies and an API key:
 
 ```bash
 pip install -e ".[llm]"
-# PowerShell: $env:ANTHROPIC_API_KEY = "sk-ant-..."
-# bash:       export ANTHROPIC_API_KEY=sk-ant-...
+# PowerShell:  $env:ANTHROPIC_API_KEY = "sk-ant-..."
+# bash:        export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 It runs between `prep` and `lookup`, with a review gate:
 
 ```
-translate        01_prepared.json                      -> 01b_translations.csv   (review/edit this)
+translate        01_prepared.json                       -> 01b_translations.csv   (review/edit)
 translate-apply  01_prepared.json + 01b_translations.csv -> 01b_translated.json
 lookup --inp 01b_translated.json
 ```
 
-In `01b_translations.csv`, `accept` is pre-filled `yes` and `approved_english`
-is pre-filled with the suggestion; edit `approved_english` to override, or set
-`accept` to no/blank to skip a term. `translate-apply` folds approved English
-into the prepared terms, tagged `target_source = llm` (or `human` if you edited
-it). The translation is used by `lookup` only as an **untrusted** query — it can
-surface AAT candidates but never auto-accepts, since only nb/nn are trusted. The
-provenance shows up as `english_source` in `03b_review.csv` and
-`translation_source` in the final outputs.
+In `01b_translations.csv`, `approved_english` is pre-filled with the suggestion
+and `accept` with `yes`; edit `approved_english` to override, or clear `accept`
+to skip a term. `translate-apply` folds approved English into the terms, tagged
+`target_source = llm` (or `human` if you edited it). Remember: this English is an
+**untrusted lookup query** — it can surface candidates but never auto-accepts.
 
-Two further pieces of LLM metadata ride along through the gate (both prunable
-in the CSV before `translate-apply`):
+The translate step also produces three optional, prunable extras that ride
+through the same review gate:
 
-- **`alternatives`** become *fallback* lookup queries: when a term's primary
-  nb/en queries return no CONVINCING candidate — none scoring at least
-  `lookup.alternatives_trigger_score` (default 60; 0 = strict mode, fall back
-  only when the primaries return nothing above `min_candidate_score`) —
-  `lookup` tries up to `lookup.max_alternative_queries` of them (default 3,
-  0 disables). The extra queries only add candidates, so a strong primary
-  result is never displaced. Anything they surface follows the same trust rule
-  as the main LLM English: review only, never auto-accept.
-- **`expected_facet`** is the LLM's prediction of the term's facet (one of the
-  profile's `facets.accepted` names; invalid predictions are dropped). It is
-  **advisory only**: `classify` may use it to pick which of several *near-tied*
-  candidates to propose and annotates the agreement in `reasons` and the
-  `expected_facet` column of `03b_review.csv` — it never changes the
-  accept gate, the tier, a trusted nb/nn exact pick, or a
-  `preferred_hierarchies` hit.
-- **`expected_hierarchy`** is one level finer: the LLM picks from the profile's
-  `preferred_hierarchies` labels (a closed list, cleaned of `(hierarchy name)`
-  noise — never free text; anything outside the list is dropped, and `""` is a
-  normal answer since the anchors don't cover every term). Also **advisory
-  only**: when several candidates sit in preferred hierarchies, `classify`
-  proposes the strongest one in the *expected* hierarchy before falling back to
-  any hierarchy, with the same guards (a trusted nb/nn exact is never
-  overridden, the gate and tier never change). Agreement, disagreement, or an
-  unrecognized edited label is annotated in `reasons`, and the prediction is
-  shown in the `expected_hierarchy` column of `03b_review.csv` next to
-  `proposed_hierarchy`. In profiles without `preferred_hierarchies` the field
-  is simply not requested — `expected_facet` remains the coarse fallback there.
-  Note the prediction normally only exists for terms that went through the
-  translate step (those missing source-data English). `translate --predict-all`
-  closes that gap: terms that **already have** source-data English are also run
-  through the LLM — with a separate prediction-only prompt that shows their
-  existing English as context — producing **only** `expected_facet` /
-  `expected_hierarchy`. Their English is never produced, changed, or queried
-  differently: `main_target_term`, `target_source` (stays `source_data`) and
-  the absence of LLM `alternatives` are untouched, so the trust rules above are
-  unaffected. These rows appear in `01b_translations.csv` with `task: predict`
-  and a blank `approved_english` (anything typed there is ignored), behind the
-  same `accept` gate; `translate-apply` folds in only the predictions.
-  Prediction cache entries live in a separate `cls:` namespace with their own
-  `predict_prompt_version`, so enabling or tweaking this never invalidates
-  cached translations. Off by default (it scales LLM volume from the
-  missing-English subset to the whole vocabulary); `retranslate` refreshes
-  predict rows automatically when they match the selection.
+| field | what it does | trust |
+|---|---|---|
+| `alternatives` | extra fallback search queries, tried only when the primary queries find nothing convincing | lookup query only — review, never auto-accept |
+| `expected_facet` | the LLM's guess at the term's facet | advisory only — breaks ties between near-equal candidates and annotates review; never changes the verdict |
+| `expected_hierarchy` | a finer guess, picked from the profile's `preferred_hierarchies` | advisory only — steers which candidate is proposed; never changes the verdict |
 
-Because the response schema changed for these fields, `prompt_version` is now
-`v4` (the bump invalidates older cached translations, which lack them).
-`facets.preferred` is deprecated and unused; profiles that still set it get a
-warning from `Profile.validate()`.
+Helper commands:
 
-Settings live in the profile `translation:` block (model, `context`,
-`batch_size`, sibling options, `domain_by_root`, `prompt_version`). Use
-`translate --dry-run` to see how many terms (and roughly how many API calls)
-before spending anything, and `--max-terms` for a small test. The API key is
-read only from the `ANTHROPIC_API_KEY` environment variable — never put it in a
-profile.
-
-The model often flags terms that look misplaced in the source hierarchy. Pull
-those into their own CSV for data-quality cleanup:
-
-```
-flag-anomalies   01b_translations.csv -> 01b_anomalies.csv
+```bash
+# preview cost before spending: how many terms, ~how many API calls
+museumvocab-reconcile --profile $P translate --dry-run
+# pull LLM-flagged "looks misplaced in the hierarchy" rows out for cleanup
+museumvocab-reconcile --profile $P flag-anomalies          # -> 01b_anomalies.csv
+# re-translate just some rows (e.g. after a prompt change), preserving the rest
+museumvocab-reconcile --profile $P retranslate --confidence low,medium
+museumvocab-reconcile --profile $P retranslate --ids 100490880,100491296
 ```
 
-To refresh only some translations (e.g. after a prompt change) without
-re-spending on the good ones, re-translate a subset by confidence and/or id and
-merge the results back, leaving other rows (and their edits) untouched:
+The API key is read only from `ANTHROPIC_API_KEY`; never put it in a profile.
 
+## Tuning lookup speed and throttling
+
+`lookup` is the slow stage — for each term it fetches every candidate concept
+and walks its hierarchy, so runtime and cache size scale with how many
+candidates get enriched. The levers live in the profile's `lookup:` block and
+each has a matching CLI flag:
+
+* `enrich_top_n` (`--enrich-top-n`) — enrich at most N candidates per term,
+  highest score first. The biggest single lever.
+* `min_candidate_score` (`--min-score`) — drop weak candidates before enriching.
+* `result_limit` (`--limit`) — candidates requested per query.
+
+`lookup` is resumable: re-running skips finished terms. The cache (`cache.json`)
+stores only compact per-concept data, so it stays small — keep it between runs.
+
+**If many terms suddenly return 0 candidates, you are probably being rate-
+limited.** Do *not* delete `cache.json` (that forces a full re-fetch and makes
+it worse). Persistent failures are now recorded as `ERROR` entries rather than
+silent zeros, and resume retries them; `classify` refuses to run while errors
+remain, so they can't be mistaken for real no-matches. Slow down with
+`--sleep 0.5 --request-delay 0.3`, reduce volume with a higher `--min-score` /
+lower `--enrich-top-n`, and wait a few minutes. To re-attempt terms an older
+build zeroed silently, delete `02_candidates.json` once (keep `cache.json`) and
+re-run.
+
+## Writing a profile
+
+A profile is one YAML file describing how to reconcile one vocabulary against
+one authority. Start from a bundled profile (e.g.
+`museumvocab_reconcile/profiles/techniques.aat.yaml`) and adjust. The blocks
+that matter most:
+
+```yaml
+profile: techniques            # a name for logs
+authority: aat                 # aat | iconclass
+
+languages:
+  source: nb                   # the source vocabulary's main language
+  target: en                   # the lookup/output language
+  trusted_exact_match_langs: [nb, nn]   # exact match in these auto-accepts; [] for Iconclass
+  # match_langs: [nb, nn, en]  # optional: require the matched label be in these languages
+
+facets:
+  accept_all: false            # true = accept any facet (ignores `accepted`)
+  accepted: [techniques, work_types, materials, formats, design_motifs]
+  linked_art_property:         # facet -> where its match attaches in Linked Art
+    materials: {target: object, prop: made_of}
+    techniques: {target: production, prop: classified_as}
+
+thresholds:
+  auto_accept:
+    mode: full                 # full (exact OR score/gap) | exact_only | off (all -> review)
+    min_score: 25
+    min_score_gap: 5
+
+source_schema:                 # how to read the export's columns
+  id_field: ID
+  status_field: Status
+  include_status: [Gyldig]
+  level_pattern: "Level_{n}_{lang}"   # tolerant of extra levels / other language codes
+  dedupe_by: ID
+
+review:
+  include_auto_accepted: false # true also lists auto-accepted rows in the review CSV
+
+# lookup: and translation: blocks tune speed and the optional LLM step;
+# see a bundled profile for the full set of options, each documented inline.
 ```
-# re-translate the low/medium-confidence rows and overwrite the CSV in place
-retranslate --confidence low,medium
-# or specific ids:
-retranslate --ids 100490880,100491296
-```
 
-`retranslate` always re-queries the selected rows (ignoring cache) with the
-current prompt, and resets their `approved_english`/`accept` to the new
-suggestion; rows it doesn't touch are preserved exactly.
+The config knobs most worth understanding:
+* `facets.accept_all` / `facets.accepted` — which authority facets count.
+* `thresholds.auto_accept.mode` — `full` (exact or score/gap), `exact_only`
+  (only a trusted exact match), or `off` (everything goes to review).
+* `languages.trusted_exact_match_langs` — the languages in which an exact match
+  is trusted enough to auto-accept (`[]` disables it, as for Iconclass).
+* `facets.preferred_hierarchies` with `hierarchy_mode: prefer` — refines *which*
+  candidate is proposed within the accepted facets; it never changes the accept
+  gate. Discover anchor ids with `python tools/profile_hierarchies.py`.
 
-## Tuning lookup speed & cache size
+## Authorities (adapters)
 
-`lookup` is the slow stage: for every term it fetches each candidate concept and
-walks its hierarchy, so both runtime and cache size scale with how many
-candidates get enriched. Levers (in the profile `lookup:` block, each
-overridable per run):
+* **AAT** — reconciles via the Getty OpenRefine endpoint and reads each concept's
+  JSON-LD. **As of 2024 Getty serves Linked Art JSON-LD, not SKOS**; the adapter
+  parses the current Linked Art form (and still tolerates the older GVP/SKOS
+  shape). A concept's facet is found by walking its `broader` chain to a known
+  root. Concepts whose root isn't mapped get `facet: null` and route to review
+  unless `accept_all` is set — extend the small `FACET_ROOTS` map at the top of
+  `adapters/aat.py` for facets in other branches.
+* **Iconclass** — per-notation JSON gives labels and the ancestor path; the
+  search route is discovered from the live API spec at run time. Iconclass has
+  no Norwegian, so its profile pivots on English
+  (`trusted_exact_match_langs: [en]`).
 
-* `lookup.enrich_top_n` (`--enrich-top-n`) — enrich at most N candidates per
-  term, highest score first. The single biggest lever.
-* `lookup.min_candidate_score` (`--min-score`) — drop weak candidates before
-  enriching.
-* `lookup.result_limit` (`--limit`) — candidates requested per query.
+## Helper tools
 
-The cache stores only compact per-concept nodes (labels, immediate broader,
-scope note), not the full raw JSON-LD, so it stays small. Delete `cache.json`
-once to discard any oversized cache from an earlier version.
+In `tools/` (run from your own machine — the Getty/Iconclass APIs are not
+reachable from a sandbox):
+* `diagnose_term.py` — run lookup + classify for a single term end to end, to
+  see why it matched (or didn't).
+* `profile_hierarchies.py` — explore the AAT hierarchy distribution in a lookup
+  result to choose `preferred_hierarchies` anchors.
+* `verify_facets.py` — check `FACET_ROOTS` ids against live Getty records.
 
-**If many terms suddenly return 0 candidates**, the authority is likely
-rate-limiting you. Do not delete `cache.json` (that forces a full re-fetch and
-makes throttling worse) — keep it. Re-running `lookup` now surfaces persistent
-failures as `ERROR 429/503/499` rather than silent zeros, and resume retries any
-errored term. Slow down with `--sleep 0.5 --request-delay 0.3`, reduce request
-volume with a higher `min_candidate_score` / lower `enrich_top_n`, and wait a
-few minutes if you're currently throttled. To re-attempt terms that were
-silently zeroed by an older build, delete `02_candidates.json` once (keep
-`cache.json`) and re-run.
+## Tests
 
-`assemble` writes `04_final.json`, `04_final.csv` (flattened, Excel-friendly),
-`04_linkedart.json`, and `log.txt` — a run report with the config used, tier and
-auto-accept-basis distributions, matched-language breakdown, review outcomes
-(accepted / rejected / undecided, proposals overridden), translation provenance,
-and the no-match terms.
-
-## Config knobs that matter most
-
-* `facets.accept_all` (default `false`) — accept any facet the authority returns
-  without listing them; when `false`, only `facets.accepted` count.
-* `facets.preferred` — influences tiering/ranking but never hard-filters.
-* `thresholds.auto_accept.mode` — `full` (exact OR score/gap) · `exact_only`
-  (only trusted-language exact matches) · `off` (everything → review).
-* `languages.trusted_exact_match_langs` — languages in which an exact label
-  match is trusted enough to auto-accept (`[]` for Iconclass — see below).
-* `languages.trusted_target_pref_exact` (default true) — additionally trust an
-  exact match on the target-language **preferred** label when the query is the
-  term's source-data English (human-catalogued). Alt-label exacts and any
-  LLM/edited English stay review-tier.
-* `languages.match_langs` — languages a candidate's *matched* label may be in
-  without being flagged for review. Three things to know about how matching
-  works since the match-quality redesign: (1) proposal ordering is **banded** —
-  exact match in a `match_langs` language, then exact match outside it, then
-  fuzzy — and the reconcile score only ranks within a band, because its
-  absolute values are noise at the low end (an exact descriptor hit can score
-  below fuzzy relatives); (2) an exact match in an untracked language is
-  *proposed* (it is usually the right concept, e.g. loanwords) but flagged and
-  never auto-accepted; (3) a fuzzy candidate's `matched_lang` is just an echo
-  of the query language, so the flag applies to exact matches only. Label
-  attribution prefers `trusted_exact_match_langs`, then `match_langs`, when the
-  same surface form exists in several languages — so keep `match_langs` tight
-  (`[nb, nn, en]`); widening it to fr/de etc. is no longer needed to rescue
-  shared-form matches and only weakens the false-friend review flag.
-
-## Adapters
-
-* **AAT (`adapters/aat.py`)** — implemented. Reconciles via the Getty OpenRefine
-  endpoint (tolerant of JSON-body vs form-encoded request styles, remembering
-  whichever works) and fetches each concept's JSON-LD. It parses both Getty
-  serialisations: the GVP/SKOS model (preferred — labels carry `@nb`/`@nn`
-  tags) and the Linked.Art model (languages mapped from AAT URIs). Facet is
-  derived by walking `broader` to a known root in `FACET_ROOTS`.
-* **Iconclass (`adapters/iconclass.py`)** — implemented. Per-notation JSON gives
-  labels and the ancestor path; the text-search route is discovered from the
-  live OpenAPI spec at run time. Iconclass has no Norwegian, so an Iconclass
-  profile pivots on English (`trusted_exact_match_langs: []`).
-
-Two caveats worth knowing:
-* AAT facet detection only resolves a facet when an ancestor is in `FACET_ROOTS`
-  (a small, editable map near the top of `adapters/aat.py`). Concepts whose root
-  isn't listed get `facet: null` and, unless `facets.accept_all` is true, are
-  routed to review. Extend the map for vocabularies in other facets.
-* The Iconclass search route is resolved live; if results look wrong, check
-  `https://iconclass.org/docs` and pass `search_template=` to the adapter.
-
-## Status
-
-All stages are implemented and in working use: prep (schema-drift tolerant
-loader), optional LLM translation (`translate` / `translate-apply` /
-`retranslate` / `flag-anomalies`), lookup (with retry/backoff, resume, and
-compact caching), tiering, review export/ingest, and assembly (JSON + CSV +
-Linked Art + log).
-
-### Tests
-
-An offline test suite lives in `tests/` (no network, no Getty, no secrets — fake
-responses and fixture nodes are injected). It covers the engine logic and the
-known tripwires: confidence tiering and trusted-language (`nb`/`nn`) auto-accept,
-AAT Linked-Art parsing (the post-2024 default, not SKOS), preferred-parent facet
-resolution, and the rate-limit rule that a persistent reconcile failure must
-*raise* (recorded as `ERROR`, retried on resume) rather than be logged as
-`no_match`. Run them with:
+An offline test suite lives in `tests/` — no network, no Getty, no secrets;
+fake responses and fixture concepts are injected. It covers the engine logic and
+the known tripwires: confidence tiering and trusted-language (`nb`/`nn`) auto-
+accept, the post-2024 Linked-Art parsing, facet resolution, the rate-limit rule
+(a persistent failure must surface as `ERROR` and be retried, never logged as
+`no_match`), and auto-accept provenance through the review round-trip.
 
 ```powershell
 pip install pytest

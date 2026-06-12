@@ -310,7 +310,13 @@ def cmd_lookup(args):
                 enriched = adapter.enrich_candidates(
                     ranked, lang_order.target, prefer_langs=pl
                 )
-                results.append({"term": asdict(t), "candidates": [asdict(c) for c in enriched]})
+                results.append({
+                    "term": asdict(t),
+                    "candidates": [asdict(c) for c in enriched],
+                    # provenance: candidates were (also) surfaced by the LLM
+                    # alternative-label fallback queries this run
+                    "used_alternatives": used_alts,
+                })
                 via = " (via LLM alternatives)" if used_alts and enriched else ""
                 print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> {len(enriched)} candidates{via}")
             except Exception as exc:  # network or parse error: record and continue
@@ -333,6 +339,30 @@ def cmd_lookup(args):
 def cmd_classify(args):
     profile = _load_profile(args.profile)
     raw = json.loads(Path(args.inp).read_text("utf-8"))
+    # ---- error gate -------------------------------------------------------
+    # lookup records persistent HTTP failures as {"error": ...} entries with an
+    # empty candidate list, and its resume logic retries them. If classify ran
+    # over such entries it would tier them "no_match" ("no candidates
+    # returned") — silently converting a rate-limit blip into a permanent miss,
+    # the exact failure mode the lookup error handling exists to prevent.
+    errored = [e for e in raw if e.get("error")]
+    if errored:
+        ids = ", ".join(e["term"]["id"] for e in errored[:5])
+        more = f" (+{len(errored) - 5} more)" if len(errored) > 5 else ""
+        if not args.skip_errors:
+            raise SystemExit(
+                f"classify: {len(errored)} term(s) in {args.inp} carry a lookup "
+                f"ERROR (e.g. ids {ids}{more}). These are transient failures, "
+                f"not no-matches — re-run lookup to retry them (resume skips "
+                f"completed terms), then classify again. To classify anyway "
+                f"WITHOUT these terms, pass --skip-errors."
+            )
+        print(
+            f"classify: WARNING --skip-errors set; dropping {len(errored)} "
+            f"errored term(s) (ids {ids}{more}) from the output. They will be "
+            f"absent from review and assembly until lookup retries them."
+        )
+        raw = [e for e in raw if not e.get("error")]
     out = []
     for entry in raw:
         term = SourceTerm(**entry["term"])
@@ -375,7 +405,13 @@ def cmd_assemble(args):
             f"{n_review_tier} review/no-match term(s) will be excluded."
         )
     stats = assemble(
-        classified, decisions, profile, args.out, args.log, args.linkedart, out_csv=args.csv
+        classified, decisions, profile, args.out, args.log, args.linkedart,
+        out_csv=args.csv,
+        run_info={
+            "profile": args.profile,
+            "classified": args.inp,
+            "review_csv": args.review if review_exists else "(none)",
+        },
     )
     print(f"assemble: {stats} -> {args.out}")
 
@@ -389,6 +425,7 @@ def _classified_to_dict(ct: ClassifiedTerm) -> dict:
         "best_id": ct.best.concept_id if ct.best else None,
         "tier": ct.tier,
         "reasons": ct.reasons,
+        "match_type": ct.match_type,
         "proposed_facet": ct.proposed_facet,
         "proposed_aat_facet": ct.proposed_aat_facet,
         "proposed_hierarchy": ct.proposed_hierarchy,
@@ -401,7 +438,8 @@ def _dict_to_classified(d: dict) -> ClassifiedTerm:
     best = next((c for c in cands if c.concept_id == d.get("best_id")), cands[0] if cands else None)
     return ClassifiedTerm(
         term=SourceTerm(**d["term"]), candidates=cands, best=best,
-        tier=d["tier"], reasons=d["reasons"], proposed_facet=d.get("proposed_facet"),
+        tier=d["tier"], reasons=d["reasons"], match_type=d.get("match_type", ""),
+        proposed_facet=d.get("proposed_facet"),
         proposed_aat_facet=d.get("proposed_aat_facet"),
         proposed_hierarchy=d.get("proposed_hierarchy"),
         proposed_target_term=d.get("proposed_target_term"),
@@ -409,19 +447,174 @@ def _dict_to_classified(d: dict) -> ClassifiedTerm:
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="museumvocab-reconcile")
-    p.add_argument("--profile", required=True, help="path to a profile YAML")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    from . import __version__
 
-    s = sub.add_parser("prep"); s.add_argument("source"); s.add_argument("--out", default="01_prepared.json"); s.set_defaults(func=cmd_prep)
-    s = sub.add_parser("translate"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--out", default="01b_translations.csv"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0, help="translate at most N terms (smoke test)"); s.add_argument("--dry-run", action="store_true", help="report how many terms would be translated, make no API calls"); s.add_argument("--predict-all", action="store_true", help="also run terms that ALREADY have English through the LLM, for advisory expected_facet/expected_hierarchy predictions only (their English is never touched)"); s.set_defaults(func=cmd_translate)
-    s = sub.add_parser("translate-apply"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--translations", default="01b_translations.csv"); s.add_argument("--out", default="01b_translated.json"); s.set_defaults(func=cmd_translate_apply)
-    s = sub.add_parser("flag-anomalies"); s.add_argument("--inp", default="01b_translations.csv"); s.add_argument("--out", default="01b_anomalies.csv"); s.set_defaults(func=cmd_flag_anomalies)
-    s = sub.add_parser("retranslate"); s.add_argument("--inp", default="01_prepared.json", help="prepared terms (for context)"); s.add_argument("--translations", default="01b_translations.csv", help="existing translations to refresh"); s.add_argument("--out", default="01b_translations.csv", help="merged output (defaults to overwriting --translations)"); s.add_argument("--confidence", default="low,medium", help="comma list of confidences to re-translate"); s.add_argument("--ids", default="", help="comma list of specific term ids to re-translate"); s.add_argument("--cache", default="translation_cache.json"); s.add_argument("--max-terms", type=int, default=0); s.add_argument("--dry-run", action="store_true", help="report selection, make no API calls"); s.set_defaults(func=cmd_retranslate)
-    s = sub.add_parser("lookup"); s.add_argument("--inp", default="01_prepared.json"); s.add_argument("--out", default="02_candidates.json"); s.add_argument("--cache", default="cache.json"); s.add_argument("--limit", type=int, default=None, help="candidates per reconcile query (overrides profile lookup.result_limit)"); s.add_argument("--enrich-top-n", type=int, default=None, help="enrich at most N candidates per term (overrides profile lookup.enrich_top_n)"); s.add_argument("--min-score", type=float, default=None, help="drop candidates below this score before enriching (overrides profile lookup.min_candidate_score)"); s.add_argument("--max-terms", type=int, default=0, help="process at most N terms (0 = all); useful for a quick smoke test"); s.add_argument("--sleep", type=float, default=0.2, help="seconds to wait between terms (politeness)"); s.add_argument("--flush-every", type=int, default=10, help="write the output file every N terms"); s.add_argument("--max-retries", type=int, default=4, help="retry attempts for transient HTTP errors (429/499/5xx)"); s.add_argument("--retry-backoff", type=float, default=1.5, help="exponential backoff base for retries"); s.add_argument("--request-delay", type=float, default=0.0, help="seconds to pause before every HTTP request (throttle if the server rate-limits)"); s.set_defaults(func=cmd_lookup)
-    s = sub.add_parser("classify"); s.add_argument("--inp", default="02_candidates.json"); s.add_argument("--out", default="03_classified.json"); s.set_defaults(func=cmd_classify)
-    s = sub.add_parser("review-export"); s.add_argument("--inp", default="03_classified.json"); s.add_argument("--out", default="03b_review.csv"); s.add_argument("--include-auto", action="store_true", help="also export auto-accepted terms (also settable via profile review.include_auto_accepted)"); s.set_defaults(func=cmd_review_export)
-    s = sub.add_parser("assemble"); s.add_argument("--inp", default="03_classified.json"); s.add_argument("--review", default="03b_review.csv"); s.add_argument("--out", default="04_final.json"); s.add_argument("--linkedart", default="04_linkedart.json"); s.add_argument("--csv", default="04_final.csv", help="human-readable CSV of the final records"); s.add_argument("--log", default="log.txt"); s.set_defaults(func=cmd_assemble)
+    class _Fmt(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+        """Show defaults for every option and keep hand-formatted text intact."""
+
+    p = argparse.ArgumentParser(
+        prog="museumvocab-reconcile",
+        formatter_class=_Fmt,
+        description=__doc__,
+        epilog=(
+            "typical run (in a clean working folder; only lookup/translate need network):\n"
+            "  museumvocab-reconcile --profile techniques.aat.yaml prep source.json\n"
+            "  museumvocab-reconcile --profile techniques.aat.yaml lookup\n"
+            "  museumvocab-reconcile --profile techniques.aat.yaml classify\n"
+            "  museumvocab-reconcile --profile techniques.aat.yaml review-export   # edit 03b_review.csv\n"
+            "  museumvocab-reconcile --profile techniques.aat.yaml assemble"
+        ),
+    )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    p.add_argument(
+        "--profile", required=True,
+        help="profile YAML: a path, or the bare name of a bundled profile "
+             "(e.g. techniques.aat.yaml). Must come BEFORE the subcommand.",
+    )
+    sub = p.add_subparsers(
+        dest="cmd", required=True, metavar="STAGE",
+        title="pipeline stages (each reads the previous artifact and writes the next)",
+    )
+
+    def stage(name: str, summary: str, detail: str = ""):
+        return sub.add_parser(
+            name, help=summary, formatter_class=_Fmt,
+            description=summary + ("\n\n" + detail if detail else ""),
+        )
+
+    s = stage(
+        "prep",
+        "Load + normalise the MuseumPlus export -> 01_prepared.json. Offline.",
+        "Strips literal \"NULL\" cells and CSV-quoting artifacts, resolves the main\n"
+        "term per row (highest non-empty level) and its parent chain.\n"
+        "Next step: lookup (or the optional translate step first).",
+    )
+    s.add_argument("source", help="MuseumPlus vocabulary export (JSON)")
+    s.add_argument("--out", default="01_prepared.json", help="prepared terms artifact")
+    s.set_defaults(func=cmd_prep)
+
+    s = stage(
+        "translate",
+        "Optional: LLM-recommend English for terms missing it -> 01b_translations.csv. "
+        "Needs network + ANTHROPIC_API_KEY.",
+        "Writes a review CSV (edit 'accept'/'approved_english'); nothing is applied\n"
+        "until translate-apply. LLM English is a lookup query only - it can surface\n"
+        "candidates but NEVER auto-accepts a match.\n"
+        "Next step: review the CSV, then translate-apply.",
+    )
+    s.add_argument("--inp", default="01_prepared.json", help="prepared terms from prep")
+    s.add_argument("--out", default="01b_translations.csv", help="translation review CSV")
+    s.add_argument("--cache", default="translation_cache.json", help="LLM response cache")
+    s.add_argument("--max-terms", type=int, default=0, help="translate at most N terms (0 = all; smoke test)")
+    s.add_argument("--dry-run", action="store_true", help="report how many terms would be translated, make no API calls")
+    s.add_argument("--predict-all", action="store_true", help="also run terms that ALREADY have English through the LLM, for advisory expected_facet/expected_hierarchy predictions only (their English is never touched)")
+    s.set_defaults(func=cmd_translate)
+
+    s = stage(
+        "translate-apply",
+        "Fold the reviewed translation CSV into the prepared terms -> 01b_translated.json. Offline.",
+        "Applies rows with accept=yes; provenance is recorded as target_source\n"
+        "llm/human and stays visible through review and final output.\n"
+        "Next step: lookup --inp 01b_translated.json",
+    )
+    s.add_argument("--inp", default="01_prepared.json", help="prepared terms from prep")
+    s.add_argument("--translations", default="01b_translations.csv", help="reviewed translation CSV")
+    s.add_argument("--out", default="01b_translated.json", help="prepared terms with approved English folded in")
+    s.set_defaults(func=cmd_translate_apply)
+
+    s = stage(
+        "flag-anomalies",
+        "Extract rows the LLM flagged as misplaced in the source hierarchy -> 01b_anomalies.csv. Offline.",
+        "Input for data-quality cleanup in MuseumPlus; does not affect the pipeline.",
+    )
+    s.add_argument("--inp", default="01b_translations.csv", help="translation CSV to scan")
+    s.add_argument("--out", default="01b_anomalies.csv", help="flagged rows")
+    s.set_defaults(func=cmd_flag_anomalies)
+
+    s = stage(
+        "retranslate",
+        "Re-query a subset of translations (by confidence and/or id) and merge in place. "
+        "Needs network + ANTHROPIC_API_KEY.",
+        "Always bypasses the cache for the selected rows and resets their\n"
+        "approved_english/accept to the fresh suggestion; untouched rows (and your\n"
+        "edits to them) are preserved exactly.",
+    )
+    s.add_argument("--inp", default="01_prepared.json", help="prepared terms (for context)")
+    s.add_argument("--translations", default="01b_translations.csv", help="existing translations to refresh")
+    s.add_argument("--out", default="01b_translations.csv", help="merged output (defaults to overwriting --translations)")
+    s.add_argument("--confidence", default="low,medium", help="comma list of confidences to re-translate")
+    s.add_argument("--ids", default="", help="comma list of specific term ids to re-translate")
+    s.add_argument("--cache", default="translation_cache.json", help="LLM response cache")
+    s.add_argument("--max-terms", type=int, default=0, help="re-translate at most N of the selected terms (0 = all)")
+    s.add_argument("--dry-run", action="store_true", help="report selection, make no API calls")
+    s.set_defaults(func=cmd_retranslate)
+
+    s = stage(
+        "lookup",
+        "Query the authority (Getty/Iconclass) for candidates -> 02_candidates.json. "
+        "Needs network; run where the endpoints are reachable.",
+        "Resumable: re-running skips completed terms and RETRIES errored ones.\n"
+        "Persistent rate-limit/network failures are recorded as ERROR entries,\n"
+        "never as no-match. If many terms suddenly return 0 candidates, you are\n"
+        "probably throttled: keep cache.json, add --sleep/--request-delay.\n"
+        "Next step: classify.",
+    )
+    s.add_argument("--inp", default="01_prepared.json", help="prepared terms (use 01b_translated.json after translate-apply)")
+    s.add_argument("--out", default="02_candidates.json", help="candidates artifact (also the resume state)")
+    s.add_argument("--cache", default="cache.json", help="per-concept cache; keep it between runs")
+    s.add_argument("--limit", type=int, default=None, help="candidates per reconcile query (overrides profile lookup.result_limit)")
+    s.add_argument("--enrich-top-n", type=int, default=None, help="enrich at most N candidates per term (overrides profile lookup.enrich_top_n)")
+    s.add_argument("--min-score", type=float, default=None, help="drop candidates below this score before enriching (overrides profile lookup.min_candidate_score)")
+    s.add_argument("--max-terms", type=int, default=0, help="process at most N terms (0 = all); useful for a quick smoke test")
+    s.add_argument("--sleep", type=float, default=0.2, help="seconds to wait between terms (politeness)")
+    s.add_argument("--flush-every", type=int, default=10, help="write the output file every N terms")
+    s.add_argument("--max-retries", type=int, default=4, help="retry attempts for transient HTTP errors (429/499/5xx)")
+    s.add_argument("--retry-backoff", type=float, default=1.5, help="exponential backoff base for retries")
+    s.add_argument("--request-delay", type=float, default=0.0, help="seconds to pause before every HTTP request (throttle if the server rate-limits)")
+    s.set_defaults(func=cmd_lookup)
+
+    s = stage(
+        "classify",
+        "Tier every term (auto_accept / review / no_match) -> 03_classified.json. Offline.",
+        "Trust rules: only exact label matches in the profile's trusted languages\n"
+        "(nb/nn for AAT) or strong score+gap auto-accept; anything surfaced via\n"
+        "LLM English goes to review. Aborts if the input still contains lookup\n"
+        "ERROR entries (re-run lookup to retry them first).\n"
+        "Next step: review-export.",
+    )
+    s.add_argument("--inp", default="02_candidates.json", help="candidates from lookup")
+    s.add_argument("--out", default="03_classified.json", help="classified terms artifact")
+    s.add_argument("--skip-errors", action="store_true", help="drop terms whose lookup errored instead of aborting (they stay un-classified until lookup retries them)")
+    s.set_defaults(func=cmd_classify)
+
+    s = stage(
+        "review-export",
+        "Write the human review queue -> 03b_review.csv. Offline.",
+        "One row per review/no-match term, machine proposal pre-filled. Edit the\n"
+        "columns accept / chosen_id / chosen_target_term / chosen_facet / notes in\n"
+        "a spreadsheet, save as CSV, then run assemble.\n"
+        "Next step: edit the CSV, then assemble.",
+    )
+    s.add_argument("--inp", default="03_classified.json", help="classified terms from classify")
+    s.add_argument("--out", default="03b_review.csv", help="review CSV (UTF-8 with BOM, Excel-friendly)")
+    s.add_argument("--include-auto", action="store_true", help="also export auto-accepted terms so a reviewer can override them (also settable via profile review.include_auto_accepted)")
+    s.set_defaults(func=cmd_review_export)
+
+    s = stage(
+        "assemble",
+        "Merge tiers + review decisions into the final outputs. Offline.",
+        "Writes 04_final.json, 04_final.csv (flattened, Excel-friendly),\n"
+        "04_linkedart.json (slot-aware Linked Art fragments) and log.txt (run\n"
+        "report: config used, tier/facet distributions, review outcomes).\n"
+        "Terms rejected or left undecided in review are excluded and counted.",
+    )
+    s.add_argument("--inp", default="03_classified.json", help="classified terms from classify")
+    s.add_argument("--review", default="03b_review.csv", help="edited review CSV (warns if missing while review-tier terms exist)")
+    s.add_argument("--out", default="04_final.json", help="final vocabulary records")
+    s.add_argument("--linkedart", default="04_linkedart.json", help="Linked Art fragments for the accepted matches")
+    s.add_argument("--csv", default="04_final.csv", help="human-readable CSV of the final records")
+    s.add_argument("--log", default="log.txt", help="human-readable run report")
+    s.set_defaults(func=cmd_assemble)
 
     args = p.parse_args(argv)
     args.func(args)

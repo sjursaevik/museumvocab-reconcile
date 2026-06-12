@@ -10,7 +10,8 @@ Three design goals drive the structure:
    pluggable *authority adapters*. Onboarding a new vocabulary means writing a
    profile, not editing code.
 2. **Transparent** — every stage writes a versioned, human-readable artifact;
-   the log records the exact config (thresholds, facet rules, endpoints) used.
+   the log records the decision-relevant config (thresholds, facet and language
+   rules), tier/match-type distributions, and review outcomes.
 3. **Human-in-the-loop at each step** — the pipeline is re-entrant; you can stop
    after any stage, inspect or hand-edit its artifact, and resume. Human
    overrides live in an external CSV, separate from machine output.
@@ -230,7 +231,10 @@ silently zeroed by an older build, delete `02_candidates.json` once (keep
 `cache.json`) and re-run.
 
 `assemble` writes `04_final.json`, `04_final.csv` (flattened, Excel-friendly),
-`04_linkedart.json`, and `log.txt`.
+`04_linkedart.json`, and `log.txt` — a run report with the config used, tier and
+auto-accept-basis distributions, matched-language breakdown, review outcomes
+(accepted / rejected / undecided, proposals overridden), translation provenance,
+and the no-match terms.
 
 ## Config knobs that matter most
 

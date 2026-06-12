@@ -18,7 +18,7 @@ from pathlib import Path
 from .model import ClassifiedTerm, Decision
 
 COLUMNS = [
-    "id", "tier",                       # context (machine output)
+    "id", "tier", "match_type",         # context (machine output)
     "source_term", "parents", "english_term", "english_source",  # context
     "proposed_id", "proposed_uri", "proposed_facet", "expected_facet", "proposed_aat_facet", "proposed_hierarchy", "expected_hierarchy", "proposed_target_term",
     "matched_term", "matched_lang",    # the AAT label that matched the query (+ its language)
@@ -57,6 +57,7 @@ def export_review_csv(
                 {
                     "id": ct.term.id,
                     "tier": ct.tier,
+                    "match_type": ct.match_type,
                     "source_term": ct.term.main_lang_term,
                     "parents": " > ".join(ct.term.parents_source),
                     # the English term, whatever its origin; english_source says where from

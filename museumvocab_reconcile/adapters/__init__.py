@@ -4,10 +4,12 @@ from __future__ import annotations
 from .aat import AatAdapter
 from .base import AuthorityAdapter
 from .iconclass import IconclassAdapter
+from .kulturnav import KulturNavAdapter
 
 REGISTRY: dict[str, type[AuthorityAdapter]] = {
     AatAdapter.name: AatAdapter,
     IconclassAdapter.name: IconclassAdapter,
+    KulturNavAdapter.name: KulturNavAdapter,
 }
 
 

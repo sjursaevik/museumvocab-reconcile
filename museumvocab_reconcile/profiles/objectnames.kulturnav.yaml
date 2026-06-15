@@ -1,0 +1,64 @@
+# Profile: museum object-name/work-type vocabulary -> KulturNav (Concept)
+# KulturNav is a Norwegian-native authority, so we query in Norwegian only and
+# trust nb/nn exact matches; there is no per-candidate relevance score from the
+# API, so auto-accept is exact-only (score-based acceptance is meaningless here).
+profile: objectnames
+authority: kulturnav
+
+languages:
+  source: nb
+  target: en                    # still emit an English label for Linked Art output
+  query_order_by_depth:
+    leaf: [nb]                   # query KulturNav in Norwegian only (native + trusted)
+    root: [nb]
+  trusted_exact_match_langs: [nb, nn]
+  match_langs: [nb, nn, en]     # a coincidental sv/fi/et label must not auto-accept
+
+facets:
+  accept_all: true              # KulturNav has no fixed facet vocabulary; dataset
+                                # scoping (below) does the gating. concept.category
+                                # is surfaced for review but never blocks.
+  accepted: []
+  hierarchy_mode: "off"
+  # KulturNav -> Linked Art slots for this vocabulary (materials land on made_of).
+  linked_art_property:
+    work_types: {target: object, prop: classified_as}
+
+thresholds:
+  auto_accept:
+    mode: exact_only            # only a trusted nb/nn exact match auto-accepts
+    min_score: 25               # unused under exact_only (no API score), kept for clarity
+    min_score_gap: 5
+    trusted_lang_exact_match: true
+  review_if:
+    cross_facet_ambiguity: false
+    broader_only: true
+
+source_schema:
+  id_field: ID
+  status_field: Status
+  include_status: [Gyldig]
+  logical_name_field: logicalName
+  label_field: label
+  level_pattern: "Level_{n}_{lang}"
+  dedupe_by: ID
+
+lookup:
+  result_limit: 5
+  enrich_top_n: 5
+  min_candidate_score: 0
+  max_alternative_queries: 0    # LLM-English fallback is noise against a Norwegian authority
+
+review:
+  include_auto_accepted: true
+
+adapter:                        # forwarded to KulturNavAdapter.__init__
+  entity_types: [Concept]
+  search_property: entity.name  # switch to `text` or `nativeText_no_t` if recall is poor
+  datasets:                     # Nasjonalmuseet-curated object-name datasets (scoping = trust)
+    - a05e6cbb-26db-4861-a9fe-68857c2e707d
+    - 7a651b7e-b918-48e3-97bb-18e190a46643
+
+# No `translation:` block: source terms are Norwegian and KulturNav is queried in
+# Norwegian, so the LLM-English step adds no lookup value. Add one only if you
+# want English descriptors filled for output where the matched concept lacks `en`.

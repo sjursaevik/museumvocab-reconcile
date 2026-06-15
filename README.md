@@ -1,8 +1,8 @@
 # museumvocab-reconcile
 
 This command-line tool links a museum's controlled-vocabulary terms to concepts in an external
-authority — the [Getty Art & Architecture Thesaurus (AAT)](https://www.getty.edu/research/tools/vocabularies/aat/)
-or [Iconclass](https://iconclass.org/) — with a human reviewing every uncertain
+authority — the [Getty Art & Architecture Thesaurus (AAT)](https://www.getty.edu/research/tools/vocabularies/aat/),
+[Iconclass](https://iconclass.org/), or [KulturNav](https://kulturnav.org/) — with a human reviewing every uncertain
 match, and emits the result as [Linked Art](https://linked.art/) JSON-LD.
 
 It was built at the Norwegian National Museum of Art Architecture ad design to reconcile MuseumPlus vocabularies
@@ -77,7 +77,39 @@ pip install -e .
 Profiles ship inside the package, so you can pass one by **bare name** from any
 folder (`--profile techniques.aat.yaml`); pass a real path only for your own
 custom profile. The bundled profiles are `techniques.aat.yaml`,
-`materials.aat.yaml`, `objectnames.aat.yaml`, and `subjects.iconclass.yaml`.
+`materials.aat.yaml`, `objectnames.aat.yaml`, `subjects.iconclass.yaml`, and the
+KulturNav set `materials.kulturnav.yaml`, `techniques.kulturnav.yaml`,
+`objectnames.kulturnav.yaml`.
+
+### KulturNav specifics
+
+[KulturNav](https://kulturnav.org/info/api-core) is a Norwegian-native authority,
+which changes a few defaults relative to AAT:
+
+* **Queried in Norwegian only.** No English query is issued against a Norwegian
+  authority (it adds false-friend risk, not recall); nb/nn exact matches are the
+  trusted signal.
+* **No relevance score from the API.** Candidates are rank-ordered only, so
+  KulturNav profiles run `auto_accept.mode: exact_only` — only a trusted nb/nn
+  exact match auto-accepts; there is no score-based acceptance path.
+* **Dataset scoping is a trust requirement.** KulturNav is multi-tenant, so each
+  profile pins the Nasjonalmuseet-curated Concept dataset UUIDs (`adapter.datasets`).
+  An unscoped run warns. KulturNav has no fixed facet vocabulary, so profiles use
+  `facets.accept_all: true` and the dataset scope does the gating; `concept.category`
+  is surfaced for review but never blocks.
+* **Free second-hop crosswalk.** Many KulturNav concepts carry SKOS matchings
+  (`exactMatch`/`closeMatch`/… and `sameAs`) to Getty AAT and Wikidata. The adapter
+  captures these on each candidate (`Candidate.matchings`) so assembly can emit the
+  AAT/Wikidata URI. They are crowd-/bot-curated in KulturNav, so they are
+  review-grade hints, never an auto-accept signal.
+
+> First run: KulturNav's live JSON shapes weren't pinnable from the build sandbox,
+> so the record parser is written defensively and confirmed on your machine with
+> `python diagnose_kulturnav.py [label] [dataset-uuid]` — it dumps a scoped search
+> plus one record (JSON-LD and Core API) so you can verify the language tags
+> (`no`=Bokmål), reference shapes, and matching URIs against the maps in
+> `adapters/kulturnav.py`. Like AAT/Iconclass, `lookup` runs on your machine
+> (kulturnav.org applies bot detection).
 
 ## Run a vocabulary through, start to finish
 

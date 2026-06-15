@@ -306,13 +306,19 @@ def _entities(data: Any) -> list[dict[str, Any]]:
 
 
 def _caption(ent: dict[str, Any]) -> str | None:
-    """Best-effort display label from a Core search hit."""
+    """Best-effort display label from a Core search hit. The `name` is usually a
+    language-keyed dict ({"no":..,"en":..,"*":..}); prefer the native form
+    (the `*` default, then Norwegian) over English so the PROVISIONAL label
+    matches an nb query — exactness is recomputed from the record in enrich
+    regardless, so this only affects pre-enrich display."""
     n = ent.get("name") or ent.get("caption")
     if isinstance(n, str):
         return n
-    # Some shapes give {"value": "..."} or a localised list.
     if isinstance(n, dict):
-        return n.get("value") or n.get("en") or next(iter(n.values()), None)
+        for k in ("*", "no", "nb", "nn", "en"):
+            if isinstance(n.get(k), str):
+                return n[k]
+        return next((v for v in n.values() if isinstance(v, str)), None)
     if isinstance(n, list) and n:
         first = n[0]
         return first.get("value") if isinstance(first, dict) else (first if isinstance(first, str) else None)
@@ -328,7 +334,12 @@ def _node_graph(doc: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _concept_node(doc: Any, concept_id: str) -> dict[str, Any]:
     """Locate the main concept node whether the JSON-LD is flat or a @graph, or
-    whether the Core API envelope ({entities:[...]}) was returned instead."""
+    whether the Core API envelope ({entities:[...]}) was returned instead.
+
+    KulturNav's JSON-LD @graph also contains sibling fragment nodes — a
+    `#about` foaf:Document and `#superconcept.webReference-N` nodes — whose @id
+    shares the concept's UUID once the fragment is stripped. Prefer the node
+    whose @id has NO fragment (the concept itself); fall back to first match."""
     if isinstance(doc, list):
         doc = doc[0] if doc else {}
     ents = _entities(doc)
@@ -339,9 +350,16 @@ def _concept_node(doc: Any, concept_id: str) -> dict[str, Any]:
         return ents[0]
     nodes = _node_graph(doc)
     if nodes:
+        fallback: dict[str, Any] | None = None
         for n in nodes:
-            if _bare_uuid(n.get("@id") or n.get("id") or "") == concept_id:
+            raw_id = n.get("@id") or n.get("id") or ""
+            if _bare_uuid(raw_id) != concept_id:
+                continue
+            if "#" not in raw_id:        # the concept node, not a #about/#webRef fragment
                 return n
+            fallback = fallback or n
+        if fallback is not None:
+            return fallback
         return nodes[0]
     return doc if isinstance(doc, dict) else {}
 
@@ -370,6 +388,8 @@ def _lang_value_pairs(value: Any) -> list[tuple[str, str]]:
             return [(_from_kn_lang(lang) if lang else "", text)]
         # language-keyed dict
         for k, v in value.items():
+            if k == "*":          # KulturNav's default/unspecified sentinel — skip
+                continue
             if isinstance(v, str):
                 out.append((_from_kn_lang(k), v))
             elif isinstance(v, dict) and (v.get("value") or v.get("@value")):
@@ -388,7 +408,8 @@ _SCOPE_KEYS = ("skos:scopeNote", "scopeNote", "concept.scopeNote",
 _BROADER_KEYS = ("skos:broader", "broader", "concept.broader")
 _CATEGORY_KEYS = ("concept.category", "category")
 _MATCH_KEYS = {
-    "exactMatch": ("skos:exactMatch", "exactMatch", "concept.exactMatch"),
+    "exactMatch": ("skos:exactMatch", "exactMatch", "concept.exactMatch",
+                   "hasExactExternalAuthority"),
     "closeMatch": ("skos:closeMatch", "closeMatch", "concept.closeMatch"),
     "broadMatch": ("skos:broadMatch", "broadMatch", "concept.broadMatch"),
     "narrowMatch": ("skos:narrowMatch", "narrowMatch", "concept.narrowMatch"),

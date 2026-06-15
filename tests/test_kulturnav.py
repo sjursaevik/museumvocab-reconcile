@@ -217,3 +217,77 @@ def test_unscoped_search_warns_once(capsys):
 def test_registry_exposes_kulturnav():
     ad = get_adapter("kulturnav", datasets=["d"])
     assert isinstance(ad, KulturNavAdapter)
+
+
+# ---- real KulturNav JSON-LD graph (the `akvarell` record, trimmed) -------
+# Pins the live shape confirmed against kulturnav.org: @graph with sibling
+# fragment nodes, SKOS `prefLabel`, bare-string `exactMatch` + redundant
+# `hasExactExternalAuthority`, `no`/`nn`/`en` language tags, and a top concept
+# with no broader.
+
+_AKVARELL_GRAPH = {
+    "@graph": [
+        {
+            "@id": "http://kulturnav.org/6a6111b1-12fa-499e-bfc2-60d13b4ae2a5",
+            "@type": ["schema:DefinedTerm", "skos:Concept"],
+            "name": [{"@language": "no", "@value": "Akvarell"},
+                     {"@language": "en", "@value": "Watercolor"}],
+            "title": [{"@language": "no", "@value": "Akvarell"}],
+            "hasType": ["http://kulturnav.org/b473515e-e066-4fd0-b8c0-e74ac082691b",
+                        "http://kulturnav.org/b91cf9a6-9063-4102-9916-89486f9f0c21"],
+            "hasExactExternalAuthority": "http://vocab.getty.edu/aat/300053363",
+            "exactMatch": "http://vocab.getty.edu/aat/300053363",
+            "prefLabel": [{"@language": "sv", "@value": "Akvarell"},
+                          {"@language": "nn", "@value": "Akvarell"},
+                          {"@language": "no", "@value": "Akvarell"},
+                          {"@language": "en", "@value": "Watercolor"}],
+            "inScheme": "http://kulturnav.org/79535e9b-47c7-4b91-9ec5-73f3ccd40d1a",
+            "topConceptOf": "http://kulturnav.org/79535e9b-47c7-4b91-9ec5-73f3ccd40d1a",
+        },
+        {   # fragment sibling that must NOT be picked as the concept node
+            "@id": "http://kulturnav.org/6a6111b1-12fa-499e-bfc2-60d13b4ae2a5#about",
+            "@type": "foaf:Document",
+            "primaryTopic": "http://kulturnav.org/6a6111b1-12fa-499e-bfc2-60d13b4ae2a5",
+        },
+        {
+            "@id": "http://kulturnav.org/6a6111b1-12fa-499e-bfc2-60d13b4ae2a5#superconcept.webReference-0",
+            "@type": "knav-type:WebReference",
+            "title": {"@language": "en", "@value": "Getty Research Institute AAT: aquarelle"},
+        },
+    ]
+}
+_AKVARELL_ID = "6a6111b1-12fa-499e-bfc2-60d13b4ae2a5"
+
+
+def test_concept_node_skips_fragment_siblings():
+    node = _concept_node(_AKVARELL_GRAPH, _AKVARELL_ID)
+    assert "#" not in node["@id"]            # the concept, not #about / #webReference
+    assert "prefLabel" in node
+
+
+def test_real_graph_labels_and_top_concept():
+    node = _concept_node(_AKVARELL_GRAPH, _AKVARELL_ID)
+    pref, alt = _parse_labels(node)
+    assert pref["nb"] == "Akvarell" and pref["nn"] == "Akvarell" and pref["en"] == "Watercolor"
+    assert alt == {}                          # akvarell has no altLabels
+    assert _parse_broader(node) == []         # top concept, no broader
+
+
+def test_real_graph_exactmatch_deduped_to_aat():
+    node = _concept_node(_AKVARELL_GRAPH, _AKVARELL_ID)
+    m = _parse_matchings(node)
+    aat = [x for x in m if x["authority"] == "aat"]
+    # exactMatch and hasExactExternalAuthority carry the SAME AAT URI -> one entry
+    assert len(aat) == 1
+    assert aat[0] == {"relation": "exactMatch",
+                      "uri": "http://vocab.getty.edu/aat/300053363",
+                      "authority": "aat", "id": "300053363"}
+
+
+def test_full_fetch_over_real_graph(monkeypatch):
+    ad = KulturNavAdapter(datasets=["79535e9b-47c7-4b91-9ec5-73f3ccd40d1a"])
+    monkeypatch.setattr(ad, "_http_record", lambda cid: _AKVARELL_GRAPH)
+    rec = ad.fetch(_AKVARELL_ID)
+    assert rec["pref_labels"]["nb"] == "Akvarell"
+    assert rec["matchings"][0]["id"] == "300053363"
+    assert rec["ancestors"] == []

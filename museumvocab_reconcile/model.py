@@ -68,6 +68,15 @@ class Candidate:
     scope_note: str | None = None
     ancestors: list[dict[str, Any]] = field(default_factory=list)   # [{"id":..., "label":...}]
     cross_refs: list[dict[str, Any]] = field(default_factory=list)  # related concepts in other facets
+    # SKOS crosswalk links the authority itself asserts to OTHER authorities
+    # (e.g. a KulturNav concept's skos:exactMatch -> Getty AAT / Wikidata). Each:
+    #   {"relation": "exactMatch"|"closeMatch"|"broadMatch"|"narrowMatch"
+    #               |"relatedMatch"|"sameAs",
+    #    "uri": str, "authority": "aat"|"wikidata"|... , "id": str|None}
+    # These are crowd-/bot-curated in KulturNav, so they are REVIEW-grade hints
+    # (a free second-hop to AAT/Wikidata for assembly), never an auto-accept
+    # signal. Empty for authorities that don't expose outbound matchings.
+    matchings: list[dict[str, Any]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
 

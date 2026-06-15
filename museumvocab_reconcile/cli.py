@@ -247,6 +247,7 @@ def cmd_lookup(args):
         profile.authority, cache=cache,
         max_retries=args.max_retries, backoff=args.retry_backoff,
         request_delay=args.request_delay,
+        **profile.adapter,
     )
     lang_order = profile.languages
     lk = profile.lookup

@@ -280,6 +280,12 @@ class Profile:
     lookup: LookupConfig
     review: ReviewConfig
     translation: TranslationConfig
+    # Free-form keyword arguments handed to the authority adapter's constructor
+    # (e.g. KulturNav's `datasets` / `entity_types` / `search_property`). Kept
+    # untyped so a new adapter can declare its own options without touching the
+    # engine; the engine only forwards these. An adapter that doesn't accept a
+    # given key will raise at construction, surfacing a profile typo loudly.
+    adapter: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "Profile":
@@ -298,6 +304,7 @@ class Profile:
             lookup=LookupConfig(**data.get("lookup", {})),
             review=ReviewConfig(**data.get("review", {})),
             translation=TranslationConfig(**data.get("translation", {})),
+            adapter=dict(data.get("adapter", {})),
         )
 
     def validate(self) -> list[str]:

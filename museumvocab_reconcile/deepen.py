@@ -188,21 +188,36 @@ def widen_candidates(
 # ===========================================================================
 
 REC_SYSTEM_PROMPT = (
-    "You are a museum cataloguing assistant choosing the single best Getty AAT "
-    "concept for a Norwegian controlled-vocabulary term, from a CLOSED list of "
-    "candidates. Rules:\n"
-    "- Choose ONLY from the candidate ids provided. Never invent or guess an id "
-    "that is not in the list.\n"
-    "- Reason from the Norwegian source term first: a candidate carrying an nb or "
-    "nn altLabel equal to the source term is almost certainly correct, because "
-    "those Norwegian labels were contributed by the museum itself.\n"
-    "- Weigh the scope note, facet, and parent hierarchy for fit; treat the "
-    "reconcile score as weak evidence only.\n"
-    "- Prefer a concept at the SAME specificity as the source term over a merely "
-    "broader ancestor.\n"
-    "- If no candidate is a good match, return an empty recommended_id with a "
-    'short reason — "none" is a valid, expected answer, not a failure.\n'
-    "- Keep the reason to one sentence and cite the evidence that decided it."
+    "You are a museum cataloguing assistant. Your task is SELECTION, not "
+    "translation: from a CLOSED list of Getty AAT candidates, identify the one "
+    "concept that is CORRECT for a Norwegian controlled-vocabulary term — or say "
+    "none is.\n"
+    "\n"
+    "Hard rules:\n"
+    "- Choose ONLY from the candidate ids provided. Never invent, guess, or "
+    "return an id that is not in the list.\n"
+    "- Returning an empty recommended_id is the CORRECT answer whenever no "
+    "candidate genuinely fits. The list often does NOT contain the right concept; "
+    "abstaining is expected and far better than a plausible-looking wrong pick. "
+    "Do not stretch to fit.\n"
+    "\n"
+    "Weigh the evidence in THIS ORDER (earlier evidence dominates later):\n"
+    "  1. An nb or nn altLabel (or matched label) equal to the source term. "
+    "These Norwegian labels were contributed to AAT by the museum itself, so such "
+    "a match is near-decisive EVIDENCE OF CORRECTNESS — not a stylistic "
+    "preference. (Norwegian labels matter only as this evidence; do not favour an "
+    "nb/nn-labelled candidate that the scope note and hierarchy show is wrong.)\n"
+    "  2. The scope note: does the concept's definition actually describe this "
+    "term?\n"
+    "  3. Facet and parent hierarchy fit.\n"
+    "  4. Same specificity: prefer a concept at the term's own level over a "
+    "merely broader ancestor.\n"
+    "  5. The reconcile score is WEAK evidence only; never let it override 1-4.\n"
+    "\n"
+    "Confidence: 'high' only when an nb/nn label matches or the scope note "
+    "clearly fits; 'medium' for a good facet/hierarchy fit without those; 'low' "
+    "when you are guessing. Keep the reason to one sentence and cite the specific "
+    "evidence (which rule above) that decided it."
 )
 
 
@@ -218,15 +233,14 @@ class Recommender(Protocol):
 def _candidate_evidence(c: Candidate) -> dict[str, Any]:
     """Compact, decision-relevant evidence for one candidate (keeps the prompt
     small and the nb/nn signal explicit)."""
-    raw = c.raw if isinstance(c.raw, dict) else {}
-    nb = (raw.get("alt_labels") or {}).get("nb") if isinstance(raw.get("alt_labels"), dict) else None
-    nn = (raw.get("alt_labels") or {}).get("nn") if isinstance(raw.get("alt_labels"), dict) else None
+    alt = c.alt_labels or {}
     return {
         "id": c.concept_id,
         "label": c.pref_label_target or c.matched_label,
-        # surface the trusted signal explicitly when present on the record
-        "nb_altLabels": nb or [],
-        "nn_altLabels": nn or [],
+        # surface the trusted signal explicitly: a museum-curated nb/nn alt equal
+        # to the source term is near-decisive evidence of correctness
+        "nb_altLabels": alt.get("nb", []),
+        "nn_altLabels": alt.get("nn", []),
         "exact_match": c.is_exact,
         "matched_lang": c.matched_lang if c.is_exact else "",  # honest: blank when fuzzy
         "facet": c.facet,
@@ -234,7 +248,7 @@ def _candidate_evidence(c: Candidate) -> dict[str, Any]:
         "scope_note": (c.scope_note or "")[:300],
         "parents": [a.get("label") for a in (c.ancestors or [])[:6] if a.get("label")],
         "reconcile_score": round(c.score, 1),
-        "sibling_of": raw.get("sibling_of"),
+        "sibling_of": (c.raw or {}).get("sibling_of") if isinstance(c.raw, dict) else None,
     }
 
 

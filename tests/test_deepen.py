@@ -26,6 +26,7 @@ from conftest import make_candidate, make_profile, make_term
 from museumvocab_reconcile.adapters.base import AuthorityAdapter
 from museumvocab_reconcile.cli import gather_candidates
 from museumvocab_reconcile.deepen import (
+    build_recommend_payload,
     recommend_for_term,
     run_deepen,
     select_for_deepen,
@@ -259,3 +260,34 @@ def test_siblings_harvested_and_enriched_despite_zero_score():
     assert "MAT" in ids                              # sibling surfaced
     mat = next(c for c in widened if c.concept_id == "MAT")
     assert mat.facet == "materials"                  # and enriched
+
+
+# ---- nb/nn evidence reaches the recommender -------------------------------
+
+def test_nb_altlabels_survive_enrichment_and_reach_payload():
+    """The Norwegian-first instruction is only as good as the nb/nn altLabels that
+    actually reach the prompt: enrichment must fold them onto the candidate
+    (filtered to prefer_langs), and the payload must surface them."""
+    term = make_term(nb="Brodyr", en="embroidery")
+    original = [make_candidate(concept_id="EMB", score=14, is_exact=False,
+                               facet="techniques", query_term="Brodyr")]
+    adapter = FakeAdapter(
+        by_label={"Brodyr": [], "embroidery": []},
+        records={"EMB": {
+            "pref_labels": {"en": "embroidery"},
+            # nb/nn are the trusted signal; 'de' must be dropped by the prefer_langs filter
+            "alt_labels": {"nb": ["Brodyr"], "nn": ["Broderi"], "de": ["Stickerei"]},
+            "facet": "techniques",
+        }},
+    )
+    widened, _ = widen_candidates(term, original, adapter, DEEP_PROFILE, gather_candidates)
+    emb = next(c for c in widened if c.concept_id == "EMB")
+    assert emb.alt_labels.get("nb") == ["Brodyr"]
+    assert emb.alt_labels.get("nn") == ["Broderi"]
+    assert "de" not in emb.alt_labels                # filtered to prefer_langs
+
+    ct = classify(term, widened, DEEP_PROFILE)
+    payload = build_recommend_payload(ct)
+    ev = next(c for c in payload["candidates"] if c["id"] == "EMB")
+    assert ev["nb_altLabels"] == ["Brodyr"]
+    assert ev["nn_altLabels"] == ["Broderi"]

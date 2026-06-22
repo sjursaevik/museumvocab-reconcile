@@ -112,5 +112,7 @@ deepen:                          # optional `deepen` stage (classify -> 03c_deep
   batch_size: 1
   max_tokens: 1500
   temperature: 0                 # deterministic picks (with the cache)
-  prompt_version: v1             # bump to invalidate the recommendation cache
+  prompt_version: v2             # bump to invalidate the recommendation cache
+                                 # v2: selection prompt (abstention, ordered evidence,
+                                 # nb/nn as correctness signal)
   # context: ""                  # defaults to translation.context when empty

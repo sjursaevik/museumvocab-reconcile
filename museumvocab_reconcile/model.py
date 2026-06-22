@@ -65,6 +65,12 @@ class Candidate:
     query_term: str = ""         # the source query string that produced this hit (for match recompute)
     aat_facet: str | None = None # live authority facet label "<name> (<id>)", for human review
     pref_label_target: str | None = None   # preferred label in the target language
+    # Alt (non-preferred) labels by language, folded on during enrichment and
+    # filtered to the caller's prefer_langs (trusted + match langs) to keep the
+    # candidates artifact lean. The nb/nn entries are the museum-curated signal
+    # the deepen recommender reasons from; an nb/nn alt equal to the source term
+    # is what makes a match trusted.
+    alt_labels: dict[str, list[str]] = field(default_factory=dict)
     scope_note: str | None = None
     ancestors: list[dict[str, Any]] = field(default_factory=list)   # [{"id":..., "label":...}]
     cross_refs: list[dict[str, Any]] = field(default_factory=list)  # related concepts in other facets

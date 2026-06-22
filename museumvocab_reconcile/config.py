@@ -325,7 +325,9 @@ class DeepenConfig:
     batch_size: int = 1               # terms per API call; 1 keeps each prompt rich + cacheable
     max_tokens: int = 1500
     temperature: float = 0.0           # deterministic picks (with the cache) for reproducibility
-    prompt_version: str = "v1"         # bump to invalidate the recommendation cache (namespace `rec:`)
+    prompt_version: str = "v2"         # bump to invalidate the recommendation cache (namespace `rec:`)
+                                       # v2: selection-specific prompt (abstention,
+                                       # ordered evidence, nb/nn as correctness signal)
 
 
 @dataclass

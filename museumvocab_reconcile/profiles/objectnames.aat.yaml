@@ -41,8 +41,8 @@ facets:
 thresholds:
   auto_accept:
     mode: full                 # full | exact_only | off
-    min_score: 25
-    min_score_gap: 15
+    min_score: 15
+    min_score_gap: 10
     trusted_lang_exact_match: true
   review_if:
     cross_facet_ambiguity: true
@@ -79,7 +79,7 @@ translation:                     # optional step 1b (LLM English for terms missi
   temperature: 0
   include_siblings: true         # add same-parent siblings as disambiguation context
   max_siblings: 6
-  predict_all: false             # `translate --predict-all` overrides per run: also predict
+  predict_all: true             # `translate --predict-all` overrides per run: also predict
                                  # facet/hierarchy for terms that already have English
   prompt_version: v4             # bump to invalidate the translation cache
                                  # v3: response schema adds expected_facet (advisory)

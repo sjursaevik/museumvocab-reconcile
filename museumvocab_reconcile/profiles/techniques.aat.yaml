@@ -49,9 +49,9 @@ source_schema:
   dedupe_by: ID
 
 lookup:
-  result_limit: 5          # candidates requested per reconciliation query
-  enrich_top_n: 5          # enrich at most this many per term (speed + cache size lever)
-  min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
+  result_limit: 10          # candidates requested per reconciliation query
+  enrich_top_n: 7          # enrich at most this many per term (speed + cache size lever)
+  min_candidate_score: 8   # drop candidates below this score before enriching (0 = keep all)
   max_alternative_queries: 3   # fallback queries from LLM alternatives (0 = off)
   alternatives_trigger_score: 60   # run them unless a primary candidate scores at least this (0 = only when primaries find nothing)
 
@@ -60,7 +60,7 @@ review:
 
 translation:                     # optional step 1b (LLM English for terms missing one)
   provider: anthropic
-  model: claude-sonnet-4-6       # pin the model; change as needed
+  model: claude-haiku-4-5       # pin the model; change as needed
   context: "Norwegian museum conservation techniques and mediums, for cataloguing and matching against the Getty AAT"
   batch_size: 15                 # terms per API call (cost control)
   max_tokens: 4000

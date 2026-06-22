@@ -1,6 +1,6 @@
 # Profile: art technique/medium vocabulary -> Getty AAT
 # This reproduces the settings the technique pilot converged on.
-profile: materials
+profile: styleperiod
 authority: aat
 
 languages:
@@ -9,18 +9,32 @@ languages:
   query_order_by_depth:        # Norwegian-first for leaves, English-first for roots
     leaf: [nb, en]
     root: [en, nb]
-  trusted_exact_match_langs: [nb, nn]   # AAT carries Nasjonalmuseet-contributed nb/nn altLabels
+  trusted_exact_match_langs: [nb, nn, en]   # AAT carries Nasjonalmuseet-contributed nb/nn altLabels
+  # match_langs: [nb, nn, en]  # uncomment to require the MATCHED label be in these langs;
+                               # blocks coincidental hits on untracked-language labels ("und")
 
 facets:
-  accept_all: true            # when true, any returned facet is accepted and `accepted` is ignored
-  accepted: [materials, formats, work_types]
-  hierarchy_mode: "off" 
+  accept_all: false            # when true, any returned facet is accepted and `accepted` is ignored
+  accepted: [styles_periods, subjects]
+  hierarchy_mode: prefer       # prefer | off — `prefer` favours candidates in a
+                               # preferred sub-hierarchy when picking the proposal
+  preferred_hierarchies: {
+    "300168394":"artistic concepts",
+     "300056444":"<genres in the visual arts>",
+     "300056177":"<historical, theoretical, and critical concepts>",
+     "300015646":"Styles and Periods"
+
+  }    # AAT anchor id -> label; refines candidate selection
+                               # WITHIN accepted facets (never changes the gate).
+                               # Fill from: python tools/profile_hierarchies.py 02_candidates.json --emit-yaml
+                               # then confirm ids with: python tools/verify_facets.py <id> ...
   linked_art_property:
     techniques:   {target: production, prop: classified_as}
     work_types:   {target: object,     prop: classified_as}
     materials:    {target: object,     prop: made_of}
     formats:      {target: object,     prop: dimension}
     design_motifs: {target: object,    prop: classified_as}
+    styles_periods: {target: object,    prop: classified_as}
 
 thresholds:
   auto_accept:
@@ -43,9 +57,9 @@ source_schema:
 
 lookup:
   result_limit: 10          # candidates requested per reconciliation query
-  enrich_top_n: 8         # enrich at most this many per term (speed + cache size lever)
-  min_candidate_score: 9   # drop candidates below this score before enriching (0 = keep all)
-  max_alternative_queries: 3   # fallback queries from LLM alternatives (0 = off)
+  enrich_top_n: 7          # enrich at most this many per term (speed + cache size lever)
+  min_candidate_score: 8   # drop candidates below this score before enriching (0 = keep all)
+  max_alternative_queries: 0   # fallback queries from LLM alternatives (0 = off)
   alternatives_trigger_score: 60   # run them unless a primary candidate scores at least this (0 = only when primaries find nothing)
 
 review:
@@ -53,14 +67,14 @@ review:
 
 translation:                     # optional step 1b (LLM English for terms missing one)
   provider: anthropic
-  model: claude-haiku-4-5       # pin the model; change as needed. (sjur: start with haiu-4-5, retry with sonnet-4-6 if needed)
-  context: "Norwegian museum conservation terms for materials , for cataloguing and matching against the Getty AAT"
+  model: claude-haiku-4-5       # pin the model; change as needed
+  context: "Norwegian museum conservation techniques and mediums, for cataloguing and matching against the Getty AAT"
   batch_size: 15                 # terms per API call (cost control)
   max_tokens: 4000
   temperature: 0
   include_siblings: true         # add same-parent siblings as disambiguation context
   max_siblings: 6
-  predict_all: true             # `translate --predict-all` overrides per run: also predict
+  predict_all: false             # `translate --predict-all` overrides per run: also predict
                                  # facet/hierarchy for terms that already have English
   prompt_version: v4             # bump to invalidate the translation cache
                                  # v3: response schema adds expected_facet (advisory)
@@ -68,4 +82,4 @@ translation:                     # optional step 1b (LLM English for terms missi
   domain_by_root:               # top-level parent term -> domain phrase for the prompt
     Arkitektonisk: "architecture (architecture museum context)"
     Design: "design, arts and crafts"
-    Billedkunst: "visual arts, classical and contemporary art"
+    Billedkunst: "visual arts"

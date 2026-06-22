@@ -56,15 +56,17 @@ prep            source export        -> 01_prepared.json
  ├ (optional translate steps, below) -> 01b_translated.json
 lookup          prepared terms       -> 02_candidates.json     (needs network)
 classify        candidates           -> 03_classified.json
+ ├ (optional deepen step, below)     -> 03c_deepened.json      (network + LLM)
 review-export   classified terms     -> 03b_review.csv         (edit by hand)
 assemble        classified + review  -> 04_final.json, 04_final.csv,
                                         04_linkedart.json, log.txt
 ```
 
-Only `lookup` (and the optional `translate`) reach the network: `lookup` calls
-the authority, `translate` calls an LLM. Every other stage runs fully offline,
-so they work anywhere even when a CI sandbox or office network can't reach
-Getty. Run `lookup`/`translate` wherever outbound network is available.
+Only `lookup`, the optional `translate`, and the optional `deepen` reach the
+network: `lookup` calls the authority, `translate` and `deepen` also call an
+LLM. Every other stage runs fully offline, so they work anywhere even when a CI
+sandbox or office network can't reach Getty. Run the networked stages wherever
+outbound network is available.
 
 ## Install
 
@@ -254,6 +256,63 @@ museumvocab-reconcile --profile $P retranslate --ids 100490880,100491296
 ```
 
 The API key is read only from `ANTHROPIC_API_KEY`; never put it in a profile.
+
+## Optional: a deeper second pass for hard terms (`deepen`)
+
+The primary `lookup` caps candidates by raw reconcile score *before* exactness
+is knowable, and Getty scores English-label matches higher — so the Norwegian
+candidates that carry the *trusted* auto-accept signal are the ones most often
+truncated. `deepen` targets only the **hard, low-confidence subset** of
+`classify`'s output and:
+
+1. **re-queries wide and Norwegian-first** (higher `result_limit`, more
+   alternative-label queries, and an optional cross-facet *sibling* harvest that
+   follows the concept graph with no SPARQL), and merges that with the term's
+   original candidates;
+2. **re-classifies the merged set with the same rule engine** — so a deeper
+   lookup that finally surfaces a trusted `nb`/`nn` exact can legitimately
+   promote the term to `auto_accept` **via the rule, never via the LLM**;
+3. optionally asks an **LLM to recommend one candidate from the candidate set**
+   as a *second opinion* shown next to the rule proposal.
+
+```
+deepen   03_classified.json -> 03c_deepened.json    (network; + LLM unless --no-llm)
+```
+
+```bash
+# widen + re-classify only (no API key needed) — isolates the pure depth gain:
+museumvocab-reconcile --profile $P deepen --no-llm
+# full pass with the advisory LLM recommendation:
+museumvocab-reconcile --profile $P deepen           # needs ANTHROPIC_API_KEY
+# then review/assemble against the deepened file:
+museumvocab-reconcile --profile $P review-export --inp 03c_deepened.json
+museumvocab-reconcile --profile $P assemble --inp 03c_deepened.json
+```
+
+`03c_deepened.json` is a drop-in replacement for `03_classified.json`. The
+review CSV gains advisory columns next to the rule proposal —
+`llm_recommended_id`, `llm_recommended_target_term`, `llm_confidence`,
+`llm_vs_rule` (agree / DIFFERS), `llm_reason` — so the cataloguer sees both
+opinions and decides; `chosen_id` stays the single source of truth.
+
+**What stays true.** The LLM recommendation is advisory only: it never changes
+the tier, never auto-accepts, and an id the model returns that is **not in the
+candidate set is rejected and flagged**, never substituted. Recommendations are
+cached under a key stamped with the prompt version, model, and a hash of the
+candidate set, so an unchanged set is never re-billed but a changed one
+re-derives. Tune the stage in the profile's `deepen:` block (selection
+thresholds, widen limits, sibling cap, model/prompt version); run
+`deepen --dry-run` to preview how many terms would be processed.
+
+**Is it actually helping?** Use `tools/eval_deepen.py` with a small gold set
+(`id,gold_id` CSV, or `{id: aat_id}` JSON) to compare the candidate recall and
+rule/LLM accuracy of `03_classified.json` against `03c_deepened.json` before
+trusting the extra pass:
+
+```bash
+python tools/eval_deepen.py --classified 03_classified.json  --gold gold.csv  # baseline
+python tools/eval_deepen.py --classified 03c_deepened.json   --gold gold.csv  # after deepen
+```
 
 ## Tuning lookup speed and throttling
 

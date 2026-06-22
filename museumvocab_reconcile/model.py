@@ -101,6 +101,27 @@ class ClassifiedTerm:
     proposed_aat_facet: str | None = None    # live AAT facet "<name> (<id>)" of the best candidate
     proposed_hierarchy: str | None = None    # preferred sub-hierarchy "<label> (<id>)" the best sits in
     proposed_target_term: str | None = None  # proposed English/target label
+    # ---- optional `deepen` stage output (ADVISORY ONLY) -------------------
+    # Populated only when the deepen stage processed this term. None/empty means
+    # it didn't run for this term. NONE of these ever changes the tier or the
+    # accept gate: the rule engine's re-classification of the WIDENED candidate
+    # set sets tier/best/match_type (so a deeper lookup can legitimately recover
+    # a trusted nb/nn exact and promote a term — via the rule, never the LLM);
+    # the LLM fields below are a parallel second opinion for the human reviewer.
+    deep_used: bool = False                   # the deepen stage ran for this term
+    deep_candidates_added: int = 0            # net new candidates the wider lookup surfaced
+    llm_recommended_id: str | None = None     # LLM pick, GUARANTEED in the candidate set (or None)
+    llm_recommended_target_term: str | None = None
+    llm_recommendation_reason: str = ""       # the LLM's short, evidence-citing justification
+    llm_recommendation_confidence: str = ""   # "high" | "medium" | "low" | ""
+    # Provenance stamp, e.g. "llm_deep:<model>:<prompt_version>". Mirrors
+    # target_source: makes the recommendation's origin auditable and keeps it
+    # clearly machine-generated, never mistaken for a human or source-data signal.
+    llm_recommendation_source: str = ""
+    # Does the LLM's pick agree with the rule engine's proposed best? None when
+    # the LLM made no in-set pick. A disagreement is the signal worth a human's
+    # eye; agreement raises confidence without ever auto-accepting.
+    llm_agrees_with_rule: bool | None = None
 
 
 @dataclass

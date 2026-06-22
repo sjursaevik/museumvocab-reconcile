@@ -270,6 +270,65 @@ class TranslationConfig:
 
 
 @dataclass
+class DeepenConfig:
+    """Optional stage between classify and review-export.
+
+    Re-queries the authority for the HARD subset of terms (low-confidence
+    review/no-match) with widened, Norwegian-first parameters, merges the result
+    with the original candidates, RE-CLASSIFIES with the same rule engine, and
+    optionally asks an LLM to recommend one candidate FROM THE CANDIDATE SET as a
+    parallel second opinion. Everything it emits is advisory: the rule engine's
+    re-classification (not the LLM) owns tier/best/match_type, so a deeper lookup
+    can recover a trusted nb/nn exact and promote a term, but the LLM pick never
+    auto-accepts anything. Disabled unless the stage is explicitly run.
+    """
+
+    # ---- selection: which review/no-match terms to deepen ------------------
+    # Deepen a review term when its best candidate scored below this (the noisy
+    # band where the right concept is most often just out of reach). 0 = use only
+    # the categorical selectors below.
+    select_below_score: float = 25.0
+    # Also deepen terms with NO exact candidate at all (purely fuzzy pool).
+    select_if_no_exact: bool = True
+    # Also deepen flagged cross-facet ambiguity (genuine contention worth depth).
+    select_if_cross_facet_ambiguity: bool = True
+    # Also re-search terms that returned zero candidates (no_match): a wider /
+    # alternative-label query sometimes finds what the primary missed.
+    select_no_match: bool = True
+
+    # ---- widened lookup (Norwegian-first) ----------------------------------
+    # Candidates requested per reconcile query in the deep pass (wider than the
+    # primary lookup so a low-ranked nb-exact isn't cut before enrichment).
+    result_limit: int = 20
+    # Enrich at most this many merged candidates. Higher than the primary cap on
+    # purpose: exactness is only knowable after enrichment, and the whole point
+    # of the deep pass is to not truncate the Norwegian-language hit that carries
+    # the trusted signal before it can be recognised.
+    enrich_top_n: int = 20
+    # Run up to this many of the term's LLM alternative labels as extra queries
+    # in the deep pass (independent of the primary lookup's cap).
+    max_alternative_queries: int = 5
+    # Trigger threshold for the alternatives in the deep pass (0 = always run
+    # them; the deep pass deliberately casts a wide net).
+    alternatives_trigger_score: float = 0.0
+    # Harvest the cross-facet siblings (cross_refs) of the strongest original
+    # candidates as additional candidates — a free in-graph hop (no SPARQL) that
+    # can surface a process<->work-type/material counterpart reconcile missed.
+    include_sibling_candidates: bool = True
+    max_sibling_candidates: int = 6
+
+    # ---- LLM recommendation (advisory second opinion) ----------------------
+    use_llm: bool = True               # set False to do widen+reclassify only
+    provider: str = "anthropic"        # seam for future providers
+    model: str = "claude-sonnet-4-6"   # pinned in profile; change as needed
+    context: str = ""                  # domain description; defaults to translation.context
+    batch_size: int = 1               # terms per API call; 1 keeps each prompt rich + cacheable
+    max_tokens: int = 1500
+    temperature: float = 0.0           # deterministic picks (with the cache) for reproducibility
+    prompt_version: str = "v1"         # bump to invalidate the recommendation cache (namespace `rec:`)
+
+
+@dataclass
 class Profile:
     profile: str
     authority: str
@@ -280,6 +339,7 @@ class Profile:
     lookup: LookupConfig
     review: ReviewConfig
     translation: TranslationConfig
+    deepen: DeepenConfig = field(default_factory=DeepenConfig)
     # Free-form keyword arguments handed to the authority adapter's constructor
     # (e.g. KulturNav's `datasets` / `entity_types` / `search_property`). Kept
     # untyped so a new adapter can declare its own options without touching the
@@ -304,6 +364,7 @@ class Profile:
             lookup=LookupConfig(**data.get("lookup", {})),
             review=ReviewConfig(**data.get("review", {})),
             translation=TranslationConfig(**data.get("translation", {})),
+            deepen=DeepenConfig(**data.get("deepen", {})),
             adapter=dict(data.get("adapter", {})),
         )
 

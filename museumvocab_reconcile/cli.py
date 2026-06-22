@@ -7,6 +7,7 @@
     flag-anomalies  01b_translations.csv   -> 01b_anomalies.csv
     lookup          01_prepared.json       -> 02_candidates.json   (network; runs on your machine)
     classify        02_candidates.json     -> 03_classified.json
+    deepen          03_classified.json     -> 03c_deepened.json     (optional; network + LLM)
     review-export   03_classified.json     -> 03b_review.csv        (edit this by hand)
     assemble        03_classified.json + 03b_review.csv -> 04_final.json (+ .csv, _linkedart.json, log.txt)
 
@@ -24,6 +25,7 @@ from .adapters import get_adapter
 from .assemble import assemble
 from .cache import JsonCache
 from .config import Profile
+from .deepen import get_recommender, run_deepen, select_for_deepen
 from .loader import load_source
 from .model import Candidate, ClassifiedTerm, SourceTerm
 from .review import export_review_csv, ingest_review_csv
@@ -379,6 +381,51 @@ def cmd_classify(args):
     print(f"classify: {len(out)} terms -> {args.out}  tiers={tiers}")
 
 
+def cmd_deepen(args):
+    profile = _load_profile(args.profile)
+    if args.no_llm:
+        profile.deepen.use_llm = False
+    classified = [
+        _dict_to_classified(d)
+        for d in json.loads(Path(args.inp).read_text("utf-8"))
+    ]
+    n_sel = sum(1 for ct in classified if select_for_deepen(ct, profile))
+    use_llm = profile.deepen.use_llm
+    print(
+        f"deepen: {len(classified)} terms, {n_sel} selected for the deep pass; "
+        f"widen result_limit={profile.deepen.result_limit}, enrich_top_n="
+        f"{profile.deepen.enrich_top_n}; llm={'on (' + profile.deepen.model + ')' if use_llm else 'off'}"
+    )
+    if args.dry_run:
+        print("deepen: --dry-run set, no network or API calls made.")
+        return
+
+    cache = JsonCache(args.cache)
+    adapter = get_adapter(
+        profile.authority, cache=cache,
+        max_retries=args.max_retries, backoff=args.retry_backoff,
+        request_delay=args.request_delay,
+        **profile.adapter,
+    )
+    recommender = None
+    if use_llm:
+        # default the recommendation domain context to the translation context
+        if not profile.deepen.context:
+            profile.deepen.context = profile.translation.context
+        recommender = get_recommender(profile.deepen)
+    llm_cache = JsonCache(args.llm_cache)
+    out, stats = run_deepen(
+        classified, adapter, recommender, profile, llm_cache,
+        gather_fn=gather_candidates, progress=print,
+        max_terms=args.max_terms, force=args.force,
+    )
+    Path(args.out).write_text(
+        json.dumps([_classified_to_dict(ct) for ct in out], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"deepen: {stats} -> {args.out}  (next: review-export --inp {args.out})")
+
+
 def cmd_review_export(args):
     profile = _load_profile(args.profile)
     classified = [_dict_to_classified(d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
@@ -431,6 +478,15 @@ def _classified_to_dict(ct: ClassifiedTerm) -> dict:
         "proposed_aat_facet": ct.proposed_aat_facet,
         "proposed_hierarchy": ct.proposed_hierarchy,
         "proposed_target_term": ct.proposed_target_term,
+        # deepen-stage advisory output (absent/false unless deepen ran)
+        "deep_used": ct.deep_used,
+        "deep_candidates_added": ct.deep_candidates_added,
+        "llm_recommended_id": ct.llm_recommended_id,
+        "llm_recommended_target_term": ct.llm_recommended_target_term,
+        "llm_recommendation_reason": ct.llm_recommendation_reason,
+        "llm_recommendation_confidence": ct.llm_recommendation_confidence,
+        "llm_recommendation_source": ct.llm_recommendation_source,
+        "llm_agrees_with_rule": ct.llm_agrees_with_rule,
     }
 
 
@@ -444,6 +500,14 @@ def _dict_to_classified(d: dict) -> ClassifiedTerm:
         proposed_aat_facet=d.get("proposed_aat_facet"),
         proposed_hierarchy=d.get("proposed_hierarchy"),
         proposed_target_term=d.get("proposed_target_term"),
+        deep_used=d.get("deep_used", False),
+        deep_candidates_added=d.get("deep_candidates_added", 0),
+        llm_recommended_id=d.get("llm_recommended_id"),
+        llm_recommended_target_term=d.get("llm_recommended_target_term"),
+        llm_recommendation_reason=d.get("llm_recommendation_reason", ""),
+        llm_recommendation_confidence=d.get("llm_recommendation_confidence", ""),
+        llm_recommendation_source=d.get("llm_recommendation_source", ""),
+        llm_agrees_with_rule=d.get("llm_agrees_with_rule"),
     )
 
 
@@ -587,6 +651,32 @@ def main(argv=None):
     s.add_argument("--out", default="03_classified.json", help="classified terms artifact")
     s.add_argument("--skip-errors", action="store_true", help="drop terms whose lookup errored instead of aborting (they stay un-classified until lookup retries them)")
     s.set_defaults(func=cmd_classify)
+
+    s = stage(
+        "deepen",
+        "Optional: deeper Norwegian-first re-lookup + advisory LLM recommendation "
+        "for low-confidence terms -> 03c_deepened.json. Needs network (+ "
+        "ANTHROPIC_API_KEY unless --no-llm).",
+        "Targets the HARD review/no-match subset, re-queries the authority wide and\n"
+        "Norwegian-first, RE-CLASSIFIES with the same rule engine (so a recovered\n"
+        "nb/nn exact can legitimately auto-accept), and asks an LLM to recommend one\n"
+        "candidate FROM THE CANDIDATE SET as a second opinion. The LLM pick is\n"
+        "advisory only: it never auto-accepts and an off-list id is rejected. Output\n"
+        "is a drop-in replacement for 03_classified.json.\n"
+        "Next step: review-export --inp 03c_deepened.json.",
+    )
+    s.add_argument("--inp", default="03_classified.json", help="classified terms from classify")
+    s.add_argument("--out", default="03c_deepened.json", help="deepened classified terms (drop-in for review-export/assemble)")
+    s.add_argument("--cache", default="cache.json", help="per-concept authority cache; share it with lookup")
+    s.add_argument("--llm-cache", default="deepen_llm_cache.json", help="LLM recommendation cache (version+candidate-set stamped)")
+    s.add_argument("--no-llm", action="store_true", help="widen + re-classify only; skip the LLM recommendation (isolates the depth gain, no API key needed)")
+    s.add_argument("--force", action="store_true", help="ignore the cached LLM recommendations and re-query them")
+    s.add_argument("--max-terms", type=int, default=0, help="deepen at most N selected terms (0 = all); useful for a smoke test")
+    s.add_argument("--dry-run", action="store_true", help="report how many terms would be deepened, make no network/API calls")
+    s.add_argument("--max-retries", type=int, default=4, help="retry attempts for transient HTTP errors")
+    s.add_argument("--retry-backoff", type=float, default=1.5, help="exponential backoff base for retries")
+    s.add_argument("--request-delay", type=float, default=0.0, help="seconds to pause before every HTTP request")
+    s.set_defaults(func=cmd_deepen)
 
     s = stage(
         "review-export",

@@ -88,3 +88,31 @@ translation:                     # optional step 1b (LLM English for terms missi
     Arkitektonisk: "architecture (architecture museum context)"
     Design: "design, arts and crafts"
     Billedkunst: "visual arts, classical and contemporary art"
+
+deepen:                          # optional `deepen` stage (classify -> 03c_deepened.json).
+                                 # Re-queries the HARD subset wide + Norwegian-first,
+                                 # re-classifies with the same rule engine, and adds an
+                                 # advisory LLM recommendation. All defaults shown.
+  # --- which review/no-match terms to deepen ---
+  select_below_score: 25         # deepen a review term whose best scored below this
+  select_if_no_exact: true       # ...or that has no exact candidate at all
+  select_if_cross_facet_ambiguity: true
+  select_no_match: true          # re-search terms that returned zero candidates
+  # --- widened, Norwegian-first lookup ---
+  result_limit: 20               # candidates per reconcile query in the deep pass
+  enrich_top_n: 20               # enrich more so a low-ranked nb-exact isn't truncated
+                                 # before its exactness can be recognised
+  max_alternative_queries: 5     # LLM alternative-label fallback queries
+  alternatives_trigger_score: 0  # 0 = always run them (cast a wide net)
+  include_sibling_candidates: true   # harvest cross-facet siblings (no SPARQL)
+  max_sibling_candidates: 6
+  # --- advisory LLM recommendation (second opinion; never auto-accepts) ---
+  use_llm: true                  # `deepen --no-llm` overrides per run
+  model: claude-haiku-4-5       # pin the model
+  batch_size: 1
+  max_tokens: 1500
+  temperature: 0                 # deterministic picks (with the cache)
+  prompt_version: v2             # bump to invalidate the recommendation cache
+                                 # v2: selection prompt (abstention, ordered evidence,
+                                 # nb/nn as correctness signal)
+  # context: ""                  # defaults to translation.context when empty

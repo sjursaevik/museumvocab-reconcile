@@ -140,6 +140,14 @@ class AuthorityAdapter(ABC):
             c.ancestors = rec.get("ancestors", [])
             c.cross_refs = rec.get("cross_refs", [])
             c.pref_label_target = rec.get("pref_labels", {}).get(target_lang)
+            # Retain alt labels for downstream reasoning (the deepen recommender
+            # surfaces the nb/nn ones). Filter to prefer_langs when given so the
+            # candidates artifact doesn't carry every language's alt labels;
+            # _refine_match below still sees the FULL record for exact detection.
+            alt = rec.get("alt_labels", {}) or {}
+            if prefer_langs:
+                alt = {k: v for k, v in alt.items() if k in prefer_langs}
+            c.alt_labels = alt
             if c.query_term:
                 self._refine_match(c, rec, prefer_langs)
         return candidates

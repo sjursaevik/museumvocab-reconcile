@@ -21,7 +21,10 @@ COLUMNS = [
     "id", "tier", "match_type",         # context (machine output)
     "source_term", "parents", "english_term", "english_source",  # context
     "proposed_id", "proposed_uri", "proposed_facet", "expected_facet", "proposed_aat_facet", "proposed_hierarchy", "expected_hierarchy", "proposed_target_term",
-    "matched_term", "matched_lang",    # the AAT label that matched the query (+ its language)
+    "matched_term", "matched_lang",    # the AAT label that matched the query (+ its language); blank for a fuzzy (non-exact) proposal
+    # ---- deepen-stage advisory second opinion (blank unless deepen ran) ----
+    "deep_used", "deep_candidates_added",
+    "llm_recommended_id", "llm_recommended_target_term", "llm_confidence", "llm_vs_rule", "llm_reason",
     "best_score", "reasons",            # context
     # ---- editable by the reviewer ----
     "accept", "chosen_id", "chosen_target_term", "chosen_facet", "notes",
@@ -73,8 +76,23 @@ def export_review_csv(
                     # advisory LLM hierarchy prediction from the translate step
                     "expected_hierarchy": ct.term.expected_hierarchy or "",
                     "proposed_target_term": ct.proposed_target_term or "",
-                    "matched_term": best.matched_label if best else "",
-                    "matched_lang": best.matched_lang if best else "",
+                    # matched_term/matched_lang describe an EXACT label match. For
+                    # a fuzzy proposal the reconcile display name and the query
+                    # language carry no match evidence (matched_lang is just the
+                    # query echo), so blank them rather than mislead the reviewer.
+                    "matched_term": (best.matched_label if best and best.is_exact else ""),
+                    "matched_lang": (best.matched_lang if best and best.is_exact else ""),
+                    "deep_used": "yes" if ct.deep_used else "",
+                    "deep_candidates_added": ct.deep_candidates_added or "",
+                    "llm_recommended_id": ct.llm_recommended_id or "",
+                    "llm_recommended_target_term": ct.llm_recommended_target_term or "",
+                    "llm_confidence": ct.llm_recommendation_confidence or "",
+                    # quick scan column: do the two opinions agree?
+                    "llm_vs_rule": (
+                        "" if ct.llm_agrees_with_rule is None
+                        else ("agree" if ct.llm_agrees_with_rule else "DIFFERS")
+                    ),
+                    "llm_reason": ct.llm_recommendation_reason or "",
                     "best_score": f"{best.score:.1f}" if best else "",
                     "reasons": " | ".join(ct.reasons)
                     + (f" || alts: {_runner_up_note(ct)}" if ct.candidates else ""),

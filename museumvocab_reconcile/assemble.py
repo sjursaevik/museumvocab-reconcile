@@ -67,14 +67,34 @@ def build_final_record(ct: ClassifiedTerm, decision: Decision | None, profile: P
         notes = " | ".join(ct.reasons)
         matched_lang = ct.best.matched_lang if ct.best else ""
     elif decision and decision.accept:
-        chosen_id = decision.chosen_id or (ct.best.concept_id if ct.best else "")
-        cand = next((c for c in ct.candidates if c.concept_id == chosen_id), ct.best)
-        chosen_uri = cand.uri if cand else ""
+        proposed_id = ct.best.concept_id if ct.best else ""
+        chosen_id = decision.chosen_id or proposed_id
+        cand = next((c for c in ct.candidates if c.concept_id == chosen_id), None)
+        off_list = bool(chosen_id) and cand is None and chosen_id != proposed_id
+        if cand is not None:
+            chosen_uri = cand.uri
+            # only an exact match carries a real matched language (see review.py)
+            matched_lang = cand.matched_lang if cand.is_exact else ""
+        elif chosen_id and ct.best and ct.best.concept_id:
+            # Reviewer entered an id OUTSIDE the candidate list. Derive the URI
+            # from that id (it appears verbatim in every candidate URI) instead
+            # of silently keeping best's URI, which points at a DIFFERENT concept
+            # — the wrong-URI substitution this branch exists to prevent.
+            chosen_uri = ct.best.uri.replace(ct.best.concept_id, chosen_id)
+            matched_lang = ""
+        else:
+            chosen_uri = ""
+            matched_lang = ""
         chosen_facet = decision.chosen_facet or ct.proposed_facet
         chosen_target = decision.chosen_target_term or ct.proposed_target_term or ""
         source = "human_review"
         notes = decision.notes or " | ".join(ct.reasons)
-        matched_lang = cand.matched_lang if cand else ""
+        if off_list:
+            notes = (
+                (notes + " | " if notes else "")
+                + f"off-list override: chosen_id {chosen_id} is not among this "
+                "term's candidates; URI derived from the id — verify it is correct"
+            )
     else:
         return None  # rejected or unresolved -> excluded from final output
 

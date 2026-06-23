@@ -65,6 +65,12 @@ class Candidate:
     query_term: str = ""         # the source query string that produced this hit (for match recompute)
     aat_facet: str | None = None # live authority facet label "<name> (<id>)", for human review
     pref_label_target: str | None = None   # preferred label in the target language
+    # Alt (non-preferred) labels by language, folded on during enrichment and
+    # filtered to the caller's prefer_langs (trusted + match langs) to keep the
+    # candidates artifact lean. The nb/nn entries are the museum-curated signal
+    # the deepen recommender reasons from; an nb/nn alt equal to the source term
+    # is what makes a match trusted.
+    alt_labels: dict[str, list[str]] = field(default_factory=dict)
     scope_note: str | None = None
     ancestors: list[dict[str, Any]] = field(default_factory=list)   # [{"id":..., "label":...}]
     cross_refs: list[dict[str, Any]] = field(default_factory=list)  # related concepts in other facets
@@ -101,6 +107,27 @@ class ClassifiedTerm:
     proposed_aat_facet: str | None = None    # live AAT facet "<name> (<id>)" of the best candidate
     proposed_hierarchy: str | None = None    # preferred sub-hierarchy "<label> (<id>)" the best sits in
     proposed_target_term: str | None = None  # proposed English/target label
+    # ---- optional `deepen` stage output (ADVISORY ONLY) -------------------
+    # Populated only when the deepen stage processed this term. None/empty means
+    # it didn't run for this term. NONE of these ever changes the tier or the
+    # accept gate: the rule engine's re-classification of the WIDENED candidate
+    # set sets tier/best/match_type (so a deeper lookup can legitimately recover
+    # a trusted nb/nn exact and promote a term — via the rule, never the LLM);
+    # the LLM fields below are a parallel second opinion for the human reviewer.
+    deep_used: bool = False                   # the deepen stage ran for this term
+    deep_candidates_added: int = 0            # net new candidates the wider lookup surfaced
+    llm_recommended_id: str | None = None     # LLM pick, GUARANTEED in the candidate set (or None)
+    llm_recommended_target_term: str | None = None
+    llm_recommendation_reason: str = ""       # the LLM's short, evidence-citing justification
+    llm_recommendation_confidence: str = ""   # "high" | "medium" | "low" | ""
+    # Provenance stamp, e.g. "llm_deep:<model>:<prompt_version>". Mirrors
+    # target_source: makes the recommendation's origin auditable and keeps it
+    # clearly machine-generated, never mistaken for a human or source-data signal.
+    llm_recommendation_source: str = ""
+    # Does the LLM's pick agree with the rule engine's proposed best? None when
+    # the LLM made no in-set pick. A disagreement is the signal worth a human's
+    # eye; agreement raises confidence without ever auto-accepting.
+    llm_agrees_with_rule: bool | None = None
 
 
 @dataclass

@@ -108,7 +108,7 @@ deepen:                          # optional `deepen` stage (classify -> 03c_deep
   max_sibling_candidates: 6
   # --- advisory LLM recommendation (second opinion; never auto-accepts) ---
   use_llm: true                  # `deepen --no-llm` overrides per run
-  model: claude-sonnet-4-6       # pin the model
+  model: claude-haiku-4-5       # pin the model
   batch_size: 1
   max_tokens: 1500
   temperature: 0                 # deterministic picks (with the cache)

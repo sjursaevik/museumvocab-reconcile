@@ -157,11 +157,29 @@ its parents.
 
 This is the human's main task. `review-export` writes one row per term that
 needs a decision (everything not auto-accepted; add `--include-auto` to also see
-auto-accepted rows and override them). Context columns show the machine's
-proposal — `proposed_id`, `proposed_facet`, `matched_term`, `best_score`,
-`reasons` (with runner-up candidates), and the structured `match_type`. The LLM
-advisory predictions `expected_facet`/`expected_hierarchy` appear next to the
-proposal for comparison.
+auto-accepted rows and override them).
+
+Columns are ordered left-to-right for the reviewer's workflow:
+
+1. **Readability strip** (`source_term`, `english_term`, `matched_term`,
+   `proposed_target_term`, then `matched_lang`) — the four labels to eyeball side
+   by side: source nb, source en, the matched AAT label, and the proposed AAT
+   English label. `matched_lang` sits beside `matched_term`; `nb`/`nn` here is the
+   trusted signal. `tier` and `match_type` give the machine's verdict and why.
+2. **Decision cells** (`accept`, `chosen_id`, `chosen_target_term`,
+   `chosen_facet`, `notes`) — the only columns you edit, kept just to the right of
+   the labels so accepting is a short hop. `reasons` (with runner-up candidates)
+   follows immediately, for the override case.
+3. **Deeper context** — everything else, scroll right only when digging:
+   `parents`, the full proposal (`proposed_id`/`proposed_uri`/`proposed_facet`/
+   `proposed_aat_facet`/`proposed_hierarchy`), `best_score`, the LLM advisory
+   predictions `expected_facet`/`expected_hierarchy`, and the deepen-stage second
+   opinion (`deep_used`, `llm_recommended_id`, `llm_confidence`, `llm_vs_rule`,
+   `llm_reason` — blank unless the deepen stage ran for that term).
+
+The `proposed_*` columns are the machine's immutable proposal; the `chosen_*`
+columns are pre-filled from it and are what you edit, so the original proposal is
+always still visible next to your decision.
 
 Edit only these columns, then save as CSV:
 

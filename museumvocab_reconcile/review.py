@@ -17,17 +17,31 @@ from pathlib import Path
 
 from .model import ClassifiedTerm, Decision
 
+# Column order is tuned for the human reviewer working left-to-right in a
+# spreadsheet; it carries no logic. Both writer (DictWriter) and reader
+# (DictReader) key by name, so this list may be reordered freely without
+# affecting ingest, assemble, or the tests.
 COLUMNS = [
-    "id", "tier", "match_type",         # context (machine output)
-    "source_term", "parents", "english_term", "english_source",  # context
-    "proposed_id", "proposed_uri", "proposed_facet", "expected_facet", "proposed_aat_facet", "proposed_hierarchy", "expected_hierarchy", "proposed_target_term",
-    "matched_term", "matched_lang",    # the AAT label that matched the query (+ its language); blank for a fuzzy (non-exact) proposal
+    "id",
+    # ---- readability strip: the four labels to eyeball side by side --------
+    # source nb | source en | matched AAT label | proposed AAT en label.
+    # matched_lang hugs matched_term: nb/nn here is the trusted signal.
+    "source_term", "english_term", "matched_term", "proposed_target_term",
+    "matched_lang",
+    "tier", "match_type",               # machine verdict + why
+    # ---- editable by the reviewer (accept is the primary write target) -----
+    "accept", "chosen_id", "chosen_target_term", "chosen_facet", "notes",
+    "reasons",                          # runner-up alts, beside the edit zone for overrides
+    # ---- deeper context: scroll right only when digging / overriding ------
+    "parents",
+    "proposed_id", "proposed_uri", "proposed_facet",
+    "proposed_aat_facet", "proposed_hierarchy",
+    "english_source", "best_score",
+    # advisory LLM facet/hierarchy predictions from the translate step
+    "expected_facet", "expected_hierarchy",
     # ---- deepen-stage advisory second opinion (blank unless deepen ran) ----
     "deep_used", "deep_candidates_added",
     "llm_recommended_id", "llm_recommended_target_term", "llm_confidence", "llm_vs_rule", "llm_reason",
-    "best_score", "reasons",            # context
-    # ---- editable by the reviewer ----
-    "accept", "chosen_id", "chosen_target_term", "chosen_facet", "notes",
 ]
 
 

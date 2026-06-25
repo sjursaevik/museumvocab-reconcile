@@ -211,7 +211,15 @@ review, and writes:
   tiered — e.g. `nb_exact`, `score_gap`), `matched_lang`, `translation_source`
   (`source_data` | `llm` | `human`), and `recommended_translation` /
   `recommended_authority` flags marking values worth writing back to MuseumPlus.
-* **`04_final.csv`** — the same records flattened for Excel.
+  It also carries hierarchy on both sides: `source_level` (the term's depth in
+  the MuseumPlus vocabulary) with `parents_source` / `parents_target`; and, for
+  the matched concept, its AAT broader chain as `aat_ancestors` (climb order,
+  narrow→broad, up to the facet) with `aat_depth`, plus `proposed_hierarchy`
+  (the preferred sub-hierarchy the match sits under). The AAT lineage is read
+  from the *chosen* candidate, so an off-list override (a `chosen_id` outside
+  the candidate set) emits no lineage rather than a different concept's chain.
+* **`04_final.csv`** — the same records flattened for Excel; the AAT chain
+  appears as `aat_parents` (broad→narrow, `>`-joined) beside `aat_depth`.
 * **`04_linkedart.json`** — a Linked Art fragment per match, attached to the
   right slot (e.g. `made_of` on the object, `classified_as` on the production
   event) from the profile's facet → property map.

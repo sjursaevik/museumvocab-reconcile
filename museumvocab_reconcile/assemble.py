@@ -66,11 +66,13 @@ def build_final_record(ct: ClassifiedTerm, decision: Decision | None, profile: P
         source = "auto_accept"
         notes = " | ".join(ct.reasons)
         matched_lang = ct.best.matched_lang if ct.best else ""
+        chosen_cand = ct.best
     elif decision and decision.accept:
         proposed_id = ct.best.concept_id if ct.best else ""
         chosen_id = decision.chosen_id or proposed_id
         cand = next((c for c in ct.candidates if c.concept_id == chosen_id), None)
         off_list = bool(chosen_id) and cand is None and chosen_id != proposed_id
+        chosen_cand = cand
         if cand is not None:
             chosen_uri = cand.uri
             # only an exact match carries a real matched language (see review.py)
@@ -108,6 +110,13 @@ def build_final_record(ct: ClassifiedTerm, decision: Decision | None, profile: P
     )
     recommended_authority = bool(chosen_uri)
 
+    # AAT lineage of the CHOSEN concept (never `best` on an off-list override:
+    # chosen_cand is None there, so we emit no lineage rather than a different
+    # concept's broader chain). `ancestors` is climb order (narrow->broad, up to
+    # the facet); aat_depth is the number of broader steps to the facet.
+    aat_ancestors = list(chosen_cand.ancestors) if chosen_cand else []
+    aat_depth = len(aat_ancestors) if chosen_cand else None
+
     return {
         "id": term.id,
         "status": term.status,
@@ -115,12 +124,16 @@ def build_final_record(ct: ClassifiedTerm, decision: Decision | None, profile: P
         "label": term.label,
         "source_main_term": term.main_lang_term,
         "target_main_term": chosen_target,
+        "source_level": term.main_level,
         "parents_source": term.parents_source,
         "parents_target": term.parents_target,
         "authority": profile.authority,
         "authority_id": chosen_id,
         "authority_link": chosen_uri,
         "facet": chosen_facet,
+        "proposed_hierarchy": ct.proposed_hierarchy,
+        "aat_depth": aat_depth,
+        "aat_ancestors": aat_ancestors,
         "linked_art": _linked_art_snippet(chosen_uri, chosen_facet, chosen_target, profile),
         "matched_lang": matched_lang,        # language of the matched authority label
         "match_type": ct.match_type,         # structured tier basis (see model.ClassifiedTerm)
@@ -175,8 +188,10 @@ def assemble(
 # Flat, human-readable columns for the CSV (nested fields collapsed to strings).
 _CSV_COLUMNS = [
     "id", "status", "logical_name", "label",
-    "source_main_term", "target_main_term", "parents_source",
-    "authority", "authority_id", "authority_link", "facet",
+    "source_level", "source_main_term", "target_main_term",
+    "parents_source", "parents_target",
+    "authority", "authority_id", "authority_link", "facet", "proposed_hierarchy",
+    "aat_depth", "aat_parents",
     "matched_lang", "match_type",
     "linked_art_target", "linked_art_property",
     "decision_source", "translation_source",
@@ -192,10 +207,18 @@ def _write_final_csv(path: str | Path, final: list[dict[str, Any]]) -> None:
         w.writeheader()
         for r in final:
             la = r.get("linked_art") or {}
+            # aat_ancestors is climb order (narrow->broad); present broad->narrow
+            # to match parents_source, dropping the unlabelled climb-stop node.
+            aat_anc = r.get("aat_ancestors") or []
+            aat_parents = " > ".join(
+                a["label"] for a in reversed(aat_anc) if a.get("label")
+            )
             w.writerow(
                 {
                     **{k: r.get(k) for k in _CSV_COLUMNS},
                     "parents_source": " > ".join(r.get("parents_source") or []),
+                    "parents_target": " > ".join(r.get("parents_target") or []),
+                    "aat_parents": aat_parents,
                     "linked_art_target": la.get("target", ""),
                     "linked_art_property": la.get("property", ""),
                 }

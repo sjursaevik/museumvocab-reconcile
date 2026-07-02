@@ -41,7 +41,7 @@ facets:
 thresholds:
   auto_accept:
     mode: full                 # full | exact_only | off
-    min_score: 15
+    min_score: 20
     min_score_gap: 10
     trusted_lang_exact_match: true
   review_if:
@@ -58,12 +58,12 @@ source_schema:
   dedupe_by: ID
 
 lookup:
-  result_limit: 10          # candidates requested per reconciliation query
+  result_limit: 20          # candidates requested per reconciliation query
   enrich_top_n: 8          # enrich at most this many per term (speed + cache size lever);
                            # raised from 5: reconcile's low-end scores are noisy and exactness
                            # is only knowable after enrichment, so a tight cap can cut the
                            # right concept before it can be recognised
-  min_candidate_score: 0   # drop candidates below this score before enriching (0 = keep all)
+  min_candidate_score: 5   # drop candidates below this score before enriching (0 = keep all)
   max_alternative_queries: 3   # fallback queries from LLM alternatives (0 = off)
   alternatives_trigger_score: 60   # run them unless a primary candidate scores at least this (0 = only when primaries find nothing)
 
@@ -94,7 +94,7 @@ deepen:                          # optional `deepen` stage (classify -> 03c_deep
                                  # re-classifies with the same rule engine, and adds an
                                  # advisory LLM recommendation. All defaults shown.
   # --- which review/no-match terms to deepen ---
-  select_below_score: 25         # deepen a review term whose best scored below this
+  select_below_score: 17         # deepen a review term whose best scored below this
   select_if_no_exact: true       # ...or that has no exact candidate at all
   select_if_cross_facet_ambiguity: true
   select_no_match: true          # re-search terms that returned zero candidates

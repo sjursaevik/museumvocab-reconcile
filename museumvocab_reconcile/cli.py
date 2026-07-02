@@ -439,7 +439,7 @@ def cmd_assemble(args):
     profile = _load_profile(args.profile)
     classified = [_dict_to_classified(d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
     review_exists = bool(args.review and Path(args.review).exists())
-    decisions = ingest_review_csv(args.review) if review_exists else {}
+    decisions = ingest_review_csv(args.review, progress=print) if review_exists else {}
     n_review_tier = sum(1 for ct in classified if ct.tier in ("review", "no_match"))
     if n_review_tier and not review_exists:
         print(

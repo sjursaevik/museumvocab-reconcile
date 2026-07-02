@@ -16,6 +16,7 @@ from typing import Any
 from . import __version__
 from .config import Profile, normalize_hierarchy_label
 from .model import ClassifiedTerm, Decision
+from .review import KNOWN_ACCEPT_TOKENS
 
 
 def _linked_art_snippet(uri: str, facet: str | None, label: str, profile: Profile) -> dict | None:
@@ -180,6 +181,10 @@ def assemble(
         "with_target_term": sum(1 for r in final if r["target_main_term"]),
         "auto_accepted": sum(1 for r in final if r["decision_source"] == "auto_accept"),
         "human_reviewed": sum(1 for r in final if r["decision_source"] == "human_review"),
+        "accepted_nonstandard_marker": sum(
+            1 for d in decisions.values()
+            if d.accept and d.raw_accept not in KNOWN_ACCEPT_TOKENS
+        ),
     }
     _write_log(out_log, classified, final, profile, stats, decisions, run_info)
     return stats
@@ -271,6 +276,13 @@ def _write_log(
             rev_rejected += 1
     rev_undecided = len(review_tier) - rev_accepted - rev_rejected
 
+    # Non-standard accept markers (e.g. reviewer initials) across ALL decisions,
+    # not just review-tier — a reviewer could also mark up an auto-accept row.
+    marker_counts = Counter(
+        d.raw_accept for d in decisions.values()
+        if d.accept and d.raw_accept not in KNOWN_ACCEPT_TOKENS
+    )
+
     # ---- translation provenance + LLM advisory agreement -------------------
     translation_src = Counter(r["translation_source"] for r in final)
     n_rec_translation = sum(1 for r in final if r["recommended_translation"])
@@ -344,6 +356,15 @@ def _write_log(
         f"    with proposal overridden {rev_overridden} (reviewer chose a different concept)",
         f"  rejected in review         {rev_rejected}",
         f"  undecided (excluded)       {rev_undecided}",
+    ]
+    if marker_counts:
+        lines += [
+            "  accepted via non-standard marker (e.g. reviewer initials):",
+        ]
+        lines += [
+            f"    {tok!r:<12} {n}" for tok, n in marker_counts.most_common()
+        ]
+    lines += [
         "",
         "TRANSLATION PROVENANCE (final records)",
     ]

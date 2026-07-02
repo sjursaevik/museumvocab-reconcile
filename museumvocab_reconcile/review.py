@@ -13,9 +13,17 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import Counter
 from pathlib import Path
+from typing import Callable
 
 from .model import ClassifiedTerm, Decision
+
+# Tokens that mean "accept" without triggering a non-standard-marker warning.
+# Any OTHER non-empty value in the `accept` column is also treated as an
+# accept (e.g. a reviewer's initials in a multi-reviewer setup) but is
+# flagged, since it may equally be a typo — see ingest_review_csv.
+KNOWN_ACCEPT_TOKENS = {"y", "yes", "true", "1", "auto", "accept"}
 
 # Column order is tuned for the human reviewer working left-to-right in a
 # spreadsheet; it carries no logic. Both writer (DictWriter) and reader
@@ -144,7 +152,20 @@ def _detect_delimiter(header_line: str) -> str:
     return best if counts[best] > 0 else ","
 
 
-def ingest_review_csv(path: str | Path) -> dict[str, Decision]:
+def ingest_review_csv(
+    path: str | Path, *, progress: Callable[[str], None] | None = None
+) -> dict[str, Decision]:
+    """Read reviewer decisions back from the review CSV.
+
+    Any NON-EMPTY value in `accept` counts as an accept — not just the known
+    tokens (y/yes/true/1/auto/accept). This lets multiple reviewers write
+    their initials in `accept` as a lightweight "who accepted this" signal
+    (kept verbatim in Decision.raw_accept). Tokens outside the known set are
+    still flagged via `progress`, since a non-standard token is equally
+    consistent with a typo — silently dropping ~1000+ rows because of one
+    unrecognized token is exactly the kind of silent failure this project
+    treats as a bug, so we warn instead of guessing.
+    """
     text = _read_csv_text(path)
     lines = text.splitlines()
     if not lines:
@@ -152,6 +173,7 @@ def ingest_review_csv(path: str | Path) -> dict[str, Decision]:
     delimiter = _detect_delimiter(lines[0])
 
     decisions: dict[str, Decision] = {}
+    nonstandard_markers: Counter[str] = Counter()
     reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
     if reader.fieldnames is None or "id" not in [(f or "").strip() for f in reader.fieldnames]:
         raise ValueError(
@@ -166,7 +188,9 @@ def ingest_review_csv(path: str | Path) -> dict[str, Decision]:
         if not rid:
             continue
         accept_raw = (row.get("accept") or "").strip().lower()
-        accept = accept_raw in {"y", "yes", "true", "1", "auto", "accept"}
+        accept = bool(accept_raw)
+        if accept and accept_raw not in KNOWN_ACCEPT_TOKENS:
+            nonstandard_markers[accept_raw] += 1
         decisions[rid] = Decision(
             id=rid,
             accept=accept,
@@ -175,5 +199,15 @@ def ingest_review_csv(path: str | Path) -> dict[str, Decision]:
             chosen_facet=(row.get("chosen_facet") or "").strip() or None,
             notes=(row.get("notes") or "").strip(),
             raw_accept=accept_raw,
+        )
+    if progress and nonstandard_markers:
+        total = sum(nonstandard_markers.values())
+        breakdown = ", ".join(
+            f"{tok!r}={n}" for tok, n in nonstandard_markers.most_common()
+        )
+        progress(
+            f"ingest_review_csv: {total} row(s) accepted via non-standard "
+            f"'accept' marker(s) — treated as accept (e.g. reviewer initials), "
+            f"but verify these are intentional: {breakdown}"
         )
     return decisions

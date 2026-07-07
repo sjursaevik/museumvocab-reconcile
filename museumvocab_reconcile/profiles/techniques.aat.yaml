@@ -26,7 +26,7 @@ facets:
     techniques:   {target: production, prop: classified_as}
     work_types:   {target: object,     prop: classified_as}
     materials:    {target: object,     prop: made_of}
-    formats:      {target: object,     prop: dimension}
+    formats:      {target: object,     prop: classified_as}  # a vocabulary Type is a classification; Linked Art `dimension` takes numeric Dimension nodes
     design_motifs: {target: object,    prop: classified_as}
 
 thresholds:

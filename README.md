@@ -60,6 +60,9 @@ classify        candidates           -> 03_classified.json
 review-export   classified terms     -> 03b_review.csv         (edit by hand)
 assemble        classified + review  -> 04_final.json, 04_final.csv,
                                         04_linkedart.json, log.txt
+export-resource final records        -> 05_resource.json        (optional; a
+                                        MongoDB `resources` lookup document for
+                                        the LinkedArtConversion trigger)
 ```
 
 Only `lookup`, the optional `translate`, and the optional `deepen` reach the

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from .adapters import get_adapter
 from .assemble import assemble
+from .export_resource import export_resource
 from .cache import JsonCache
 from .config import Profile
 from .deepen import get_recommender, run_deepen, select_for_deepen
@@ -464,6 +465,28 @@ def cmd_assemble(args):
     print(f"assemble: {stats} -> {args.out}")
 
 
+def cmd_export_resource(args):
+    counts = export_resource(
+        args.inp, args.out,
+        title=args.resource_title,
+        profile_name=args.profile,
+    )
+    print(f"export-resource: {counts} -> {args.out}")
+    if counts["conflicts"]:
+        print(
+            f"export-resource: WARNING {counts['conflicts']} label(s) map to "
+            "multiple distinct (uri, slot) entries — see the document's "
+            "`conflicts` section; these resolve only via authority uri or "
+            "MuseumPlus id, not via label."
+        )
+    if counts["skipped_no_snippet"]:
+        print(
+            f"export-resource: WARNING {counts['skipped_no_snippet']} record(s) "
+            "have no linked_art snippet (facet unmapped in the profile) — see "
+            "`skipped_no_snippet` in the document."
+        )
+
+
 # ---- (de)serialisation helpers for the classified artifact ----------------
 
 def _classified_to_dict(ct: ClassifiedTerm) -> dict:
@@ -706,6 +729,23 @@ def main(argv=None):
     s.add_argument("--csv", default="04_final.csv", help="human-readable CSV of the final records")
     s.add_argument("--log", default="log.txt", help="human-readable run report")
     s.set_defaults(func=cmd_assemble)
+
+    s = stage(
+        "export-resource",
+        "Package 04_final.json as a MongoDB `resources` collection document. Offline.",
+        "Builds a lookup document (entries + by_label / by_authority /\n"
+        "by_museumplus_id maps) for the LinkedArtConversion trigger. Identical\n"
+        "(label -> uri, slot) rows are collapsed with their MuseumPlus ids merged;\n"
+        "same-label-different-uri rows go to an explicit `conflicts` section (still\n"
+        "resolvable by uri/id); rows whose facet has no linked_art_property mapping\n"
+        "are listed in `skipped_no_snippet`. Nothing is silently dropped.\n"
+        "Import (PowerShell): mongoimport --uri $env:ATLAS_URI --db <db> "
+        "--collection resources --file <out> --mode upsert --upsertFields title",
+    )
+    s.add_argument("--inp", default="04_final.json", help="final records from assemble")
+    s.add_argument("--out", default="05_resource.json", help="resource document for mongoimport")
+    s.add_argument("--resource-title", required=True, help="value of the document's `title` field (the trigger's findOne key), e.g. objectnames")
+    s.set_defaults(func=cmd_export_resource)
 
     args = p.parse_args(argv)
     args.func(args)

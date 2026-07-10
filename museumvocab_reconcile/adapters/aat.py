@@ -221,6 +221,13 @@ class AatAdapter(AuthorityAdapter):
             "aat_facet": aat_facet,    # live Getty facet "<label> (<id>)", for review
         }
 
+    def peek_labels(self, concept_id: str) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """Labels only, via the compact node — no hierarchy resolution. For
+        ancestors this is a pure cache hit: _resolve_hierarchy already fetched
+        and cached every node on the walked chain."""
+        node = self._node(concept_id)
+        return node.get("pref_labels", {}) or {}, node.get("alt_labels", {}) or {}
+
     # ---- internals --------------------------------------------------------
 
     def _node(self, concept_id: str) -> dict[str, Any]:

@@ -83,6 +83,15 @@ class Candidate:
     # (a free second-hop to AAT/Wikidata for assembly), never an auto-accept
     # signal. Empty for authorities that don't expose outbound matchings.
     matchings: list[dict[str, Any]] = field(default_factory=list)
+    # Ancestor promotion provenance: when a broad term's reconcile results are
+    # all narrower children (the broad concept itself fell outside the result
+    # cut-off), the lookup stage may synthesise a candidate from an ANCESTOR on
+    # a child's already-walked parent chain — but only when one of the ancestor's
+    # labels exactly matches an actual query string. `promoted_from` holds the
+    # child concept id whose hierarchy surfaced it; None for ordinary reconcile
+    # hits. Promoted candidates carry score 0.0 (no fabricated reconcile score)
+    # and always route to review (match_type `ancestor_promoted`).
+    promoted_from: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 

@@ -121,6 +121,57 @@ class AuthorityAdapter(ABC):
 
     # ---- shared helpers ---------------------------------------------------
 
+    def peek_labels(self, concept_id: str) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """Return (pref_labels, alt_labels) for a concept as cheaply as the
+        adapter can manage. Default: a full :meth:`fetch` (cached). Adapters
+        with a lighter cached representation (AAT's compact nodes) override
+        this so callers can inspect labels WITHOUT triggering hierarchy
+        resolution."""
+        rec = self.fetch(concept_id)
+        return rec.get("pref_labels", {}) or {}, rec.get("alt_labels", {}) or {}
+
+    def candidate_from_concept(
+        self,
+        concept_id: str,
+        *,
+        query_term: str,
+        query_lang: str,
+        target_lang: str,
+        prefer_langs: list[str] | None = None,
+        promoted_from: str | None = None,
+    ) -> Candidate:
+        """Build a fully-enriched Candidate directly from a concept record —
+        for candidates synthesised OUTSIDE the reconcile results (ancestor
+        promotion). Score is 0.0: the concept has no reconcile score and a
+        fabricated one would silently participate in the score/gap gate.
+        matched_label/matched_lang/is_exact are recomputed honestly by
+        _refine_match against the record's language-tagged labels."""
+        rec = self.fetch(concept_id)
+        alt = rec.get("alt_labels", {}) or {}
+        if prefer_langs:
+            alt = {k: v for k, v in alt.items() if k in prefer_langs}
+        c = Candidate(
+            authority=self.name,
+            concept_id=concept_id,
+            uri=rec.get("uri", ""),
+            score=0.0,
+            matched_label=query_term,   # provisional; recomputed below
+            matched_lang=query_lang,
+            query_lang=query_lang,
+            query_term=query_term,
+            is_exact=False,             # provisional; recomputed below
+            facet=rec.get("facet"),
+            aat_facet=rec.get("aat_facet"),
+            scope_note=rec.get("scope_note"),
+            ancestors=rec.get("ancestors", []),
+            cross_refs=rec.get("cross_refs", []),
+            pref_label_target=(rec.get("pref_labels", {}) or {}).get(target_lang),
+            alt_labels=alt,
+            promoted_from=promoted_from,
+        )
+        self._refine_match(c, rec, prefer_langs)
+        return c
+
     def enrich_candidates(
         self,
         candidates: list[Candidate],

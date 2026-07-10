@@ -225,6 +225,17 @@ class LookupConfig:
     # candidates, never displace a primary result). 0 = strict mode: fall back
     # only when the primaries return nothing at or above min_candidate_score.
     alternatives_trigger_score: float = 60.0
+    # Broad-term rescue: when the reconcile results for a broad term are all
+    # narrower children (e.g. 'Fotografi' returning only photography subtypes,
+    # the broad concept itself pushed outside result_limit), promote an ancestor
+    # from a child's already-walked parent chain into the candidate list — but
+    # ONLY if one of the ancestor's own labels exactly matches an actual query
+    # string. Nearly free: ancestor nodes are already fetched and cached by
+    # hierarchy resolution during enrichment. Promoted candidates get score 0.0
+    # (they have no reconcile score, and a fabricated one would be a silent
+    # lie), bypass min_candidate_score by construction (they are not reconcile
+    # hits), and always tier to review with match_type `ancestor_promoted`.
+    promote_matching_ancestors: bool = False
 
 
 @dataclass

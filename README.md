@@ -352,6 +352,27 @@ each has a matching CLI flag:
 * `min_candidate_score` (`--min-score`) — drop weak candidates before enriching.
 * `result_limit` (`--limit`) — candidates requested per query.
 
+### Broad-term rescue (`promote_matching_ancestors`)
+
+Reconciling a broad term ("Fotografi") often returns only its narrower
+children (photography subtypes) — the broad concept itself falls outside
+`result_limit`. But that concept sits on every child's parent chain, which
+enrichment already walks and caches. With `promote_matching_ancestors: true`
+(`--promote-ancestors` / `--no-promote-ancestors` to override), lookup
+inspects those cached ancestors and promotes one into the candidate list
+**only when one of its own labels exactly matches a primary query string** —
+it can never flood the list with unrelated broader concepts, and the label
+peeks are cache hits.
+
+Promoted candidates are marked `promoted_from: <child id>`, carry score `0.0`
+(they are not reconcile hits, so they never enter the score/gap auto-accept
+math or the `min_candidate_score` filter), and **always route to review** with
+`match_type: ancestor_promoted` — even on an `nb`/`nn` exact label match —
+until the mechanism has been audited in practice. This only helps when at
+least one *descendant* of the broad term made it into the enriched results;
+when reconcile returns nothing related at all, raising `result_limit` remains
+the complementary fix.
+
 `lookup` is resumable: re-running skips finished terms. The cache (`cache.json`)
 stores only compact per-concept data, so it stays small — keep it between runs.
 

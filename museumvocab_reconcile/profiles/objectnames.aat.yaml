@@ -66,6 +66,11 @@ lookup:
   min_candidate_score: 5   # drop candidates below this score before enriching (0 = keep all)
   max_alternative_queries: 3   # fallback queries from LLM alternatives (0 = off)
   alternatives_trigger_score: 60   # run them unless a primary candidate scores at least this (0 = only when primaries find nothing)
+  promote_matching_ancestors: true   # broad-term rescue: promote an ancestor from a candidate's
+                                     # already-walked parent chain when its own label exactly matches
+                                     # a query string (e.g. 'Fotografi' whose reconcile results are all
+                                     # photography subtypes). Score 0.0, always routed to review
+                                     # (match_type ancestor_promoted) — safe to leave on.
 
 review:
   include_auto_accepted: true   # also write auto-accepted terms into 03b_review.csv

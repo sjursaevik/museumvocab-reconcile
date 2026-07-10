@@ -195,6 +195,19 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             f"not in match_langs {match_langs}"
         )
         code("match_lang_untracked")
+    # Ancestor-promoted candidates are synthesised OUTSIDE the reconcile
+    # results (broad-term rescue: the concept sat on a child's parent chain and
+    # its label exactly matched the query). The label match is real — often a
+    # museum-authored nb/nn altLabel — but the surfacing route is new and
+    # unaudited, so route to review first; the trusted-exact gate can be opened
+    # for these once a run has been hand-audited (mirrors the deepen-promotion
+    # posture).
+    if getattr(best, "promoted_from", None):
+        reasons.append(
+            f"promoted from ancestor walk of candidate {best.promoted_from} "
+            f"(not a reconcile hit) — review to confirm"
+        )
+        code("ancestor_promoted")
     # LLM English is a LOOKUP QUERY ONLY, never a trust signal: if the best
     # candidate was surfaced by a target-language query whose label did not come
     # from the source data (target_source llm/human — i.e. the translate step,

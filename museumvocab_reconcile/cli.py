@@ -239,6 +239,82 @@ def gather_candidates(
     return list(cands.values()), used_alternatives
 
 
+def promote_matching_ancestors(
+    term: SourceTerm,
+    enriched: list[Candidate],
+    adapter,
+    languages,
+    prefer_langs: list[str],
+) -> list[Candidate]:
+    """Broad-term rescue: synthesise candidates from ancestors whose labels
+    exactly match an actual query string.
+
+    When a broad term ('Fotografi') reconciles, the ranked results are often
+    all narrower children (photography subtypes) and the broad concept itself
+    falls outside result_limit — yet it sits ON every child's parent chain,
+    which enrichment has already walked and cached. This pass inspects those
+    cached ancestor nodes and promotes an ancestor into the candidate list
+    ONLY when one of its own pref/alt labels exactly equals one of the primary
+    query strings (nb/nn source term or the target-language term), so it can
+    never flood the list with unrelated broader concepts.
+
+    Promoted candidates carry score 0.0 (never a fabricated reconcile score:
+    _match_band still ranks their exact match above fuzzy children, but the
+    score/gap auto-accept path can mathematically never fire on them), keep
+    provenance via Candidate.promoted_from, and are forced to review by
+    tiering (match_type `ancestor_promoted`). Label peeks are cache hits;
+    only an actually-promoted ancestor costs a fetch (its parent chain
+    overlaps the walked one, so that too is mostly cached). HTTP failures
+    propagate — the lookup loop records the term as ERROR for retry on
+    resume, never a silent partial result.
+    """
+    # Primary query strings only — the same labels gather_candidates queried.
+    # (LLM alternative labels are deliberately excluded: they are fallback
+    # recall queries, not identity claims about the term.)
+    qpairs: list[tuple[str, str]] = []
+    if term.main_lang_term:
+        qpairs.append((term.main_lang_term, languages.source))
+    if term.main_target_term:
+        qpairs.append((term.main_target_term, languages.target))
+    if not qpairs:
+        return []
+
+    seen = {c.concept_id for c in enriched}
+    # ancestor id -> the first child whose chain surfaced it (provenance)
+    ancestor_child: dict[str, str] = {}
+    for c in enriched:
+        for a in c.ancestors:
+            aid = a.get("id")
+            if aid and aid not in seen and aid not in ancestor_child:
+                ancestor_child[aid] = c.concept_id
+
+    promoted: list[Candidate] = []
+    for aid, child_id in ancestor_child.items():
+        pref, alt = adapter.peek_labels(aid)
+        labels = list(pref.values())
+        for vals in alt.values():
+            labels.extend(vals)
+        normed = {adapter.normalise(v) for v in labels if v}
+        hit = next(
+            ((q, lang) for q, lang in qpairs if adapter.normalise(q) in normed),
+            None,
+        )
+        if hit is None:
+            continue
+        q, lang = hit
+        promoted.append(
+            adapter.candidate_from_concept(
+                aid,
+                query_term=q,
+                query_lang=lang,
+                target_lang=languages.target,
+                prefer_langs=prefer_langs,
+                promoted_from=child_id,
+            )
+        )
+    return promoted
+
+
 def cmd_lookup(args):
     import time
 
@@ -257,6 +333,11 @@ def cmd_lookup(args):
     result_limit = args.limit if args.limit is not None else lk.result_limit
     enrich_top_n = args.enrich_top_n if args.enrich_top_n is not None else lk.enrich_top_n
     min_score = args.min_score if args.min_score is not None else lk.min_candidate_score
+    promote_ancestors = (
+        args.promote_ancestors
+        if getattr(args, "promote_ancestors", None) is not None
+        else lk.promote_matching_ancestors
+    )
 
     out_path = Path(args.out)
     # Resume: load any results already written, skip those term IDs.
@@ -313,6 +394,13 @@ def cmd_lookup(args):
                 enriched = adapter.enrich_candidates(
                     ranked, lang_order.target, prefer_langs=pl
                 )
+                n_promoted = 0
+                if promote_ancestors:
+                    promoted = promote_matching_ancestors(
+                        t, enriched, adapter, lang_order, pl
+                    )
+                    n_promoted = len(promoted)
+                    enriched = enriched + promoted
                 results.append({
                     "term": asdict(t),
                     "candidates": [asdict(c) for c in enriched],
@@ -321,6 +409,8 @@ def cmd_lookup(args):
                     "used_alternatives": used_alts,
                 })
                 via = " (via LLM alternatives)" if used_alts and enriched else ""
+                if n_promoted:
+                    via += f" (+{n_promoted} ancestor-promoted)"
                 print(f"  [{i}/{total}] {t.id} {t.main_lang_term!r} -> {len(enriched)} candidates{via}")
             except Exception as exc:  # network or parse error: record and continue
                 results.append({"term": asdict(t), "candidates": [], "error": repr(exc)})
@@ -630,6 +720,7 @@ def main(argv=None):
     s.add_argument("--limit", type=int, default=None, help="candidates per reconcile query (overrides profile lookup.result_limit)")
     s.add_argument("--enrich-top-n", type=int, default=None, help="enrich at most N candidates per term (overrides profile lookup.enrich_top_n)")
     s.add_argument("--min-score", type=float, default=None, help="drop candidates below this score before enriching (overrides profile lookup.min_candidate_score)")
+    s.add_argument("--promote-ancestors", action=argparse.BooleanOptionalAction, default=None, help="promote an ancestor from a candidate's walked parent chain when its label exactly matches a query string — broad-term rescue (overrides profile lookup.promote_matching_ancestors; promoted candidates always route to review)")
     s.add_argument("--max-terms", type=int, default=0, help="process at most N terms (0 = all); useful for a quick smoke test")
     s.add_argument("--sleep", type=float, default=0.2, help="seconds to wait between terms (politeness)")
     s.add_argument("--flush-every", type=int, default=10, help="write the output file every N terms")

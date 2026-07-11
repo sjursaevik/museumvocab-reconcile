@@ -232,11 +232,24 @@ def classify(term: SourceTerm, candidates: list[Candidate], profile: Profile) ->
             else f"source_{profile.languages.target}_pref_exact"
         )
     elif aa.mode == "full" and facet_ok and best.score >= aa.min_score and gap >= aa.min_score_gap:
-        tier = "auto_accept"
-        reasons.append(
-            f"score {best.score:.1f} >= {aa.min_score} and gap {gap:.1f} >= {aa.min_score_gap}"
-        )
-        code("score_gap")
+        if aa.demote_score_gap_to_review:
+            # Iteration-profile safeguard: score+gap met, but under relaxed
+            # re-run settings that signal is weaker than in the first pass —
+            # route to review instead of auto-accepting. Trusted exacts were
+            # handled (and still auto-accept) in the branch above.
+            tier = "review"
+            reasons.append(
+                f"score {best.score:.1f} >= {aa.min_score} and gap {gap:.1f} >= "
+                f"{aa.min_score_gap}, but demote_score_gap_to_review is set "
+                f"(iteration profile) — review required"
+            )
+            code("score_gap_demoted")
+        else:
+            tier = "auto_accept"
+            reasons.append(
+                f"score {best.score:.1f} >= {aa.min_score} and gap {gap:.1f} >= {aa.min_score_gap}"
+            )
+            code("score_gap")
     else:
         tier = "review"
         if aa.mode == "exact_only":

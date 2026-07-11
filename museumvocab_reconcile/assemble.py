@@ -156,11 +156,18 @@ def assemble(
     out_linkedart: str | Path | None = None,
     out_csv: str | Path | None = None,
     run_info: dict[str, str] | None = None,
+    iteration_of: dict[str, int] | None = None,
 ) -> dict[str, int]:
+    """``iteration_of`` maps term id -> iteration number (1 = first pass) when
+    assembling merged multi-iteration inputs; every final record is stamped
+    with it so `decision_source=auto_accept, iteration=2` is auditable as
+    "accepted only under the iteration-2 settings"."""
+    iteration_of = iteration_of or {}
     final: list[dict[str, Any]] = []
     for ct in classified:
         rec = build_final_record(ct, decisions.get(ct.term.id), profile)
         if rec is not None:
+            rec["iteration"] = iteration_of.get(ct.term.id, 1)
             final.append(rec)
 
     Path(out_json).write_text(
@@ -185,8 +192,15 @@ def assemble(
             1 for d in decisions.values()
             if d.accept and d.raw_accept not in KNOWN_ACCEPT_TOKENS
         ),
+        # Explicit human rejects ("no authority match exists") — excluded from
+        # the final records AND from iterate-select re-runs, but documented in
+        # the log so the judgement itself is never silently absent.
+        "human_rejected": sum(1 for d in decisions.values() if d.rejected),
     }
-    _write_log(out_log, classified, final, profile, stats, decisions, run_info)
+    _write_log(
+        out_log, classified, final, profile, stats, decisions, run_info,
+        iteration_of=iteration_of,
+    )
     return stats
 
 
@@ -199,7 +213,7 @@ _CSV_COLUMNS = [
     "aat_depth", "aat_parents",
     "matched_lang", "match_type",
     "linked_art_target", "linked_art_property",
-    "decision_source", "translation_source",
+    "decision_source", "iteration", "translation_source",
     "recommendation", "recommended_translation",
     "recommended_authority", "notes",
 ]
@@ -238,10 +252,12 @@ def _write_log(
     stats: dict[str, int],
     decisions: dict[str, Decision] | None = None,
     run_info: dict[str, str] | None = None,
+    iteration_of: dict[str, int] | None = None,
 ) -> None:
     """Human-readable run report. Everything here is derived from the classified
     artifact + review decisions; nothing is recomputed from the network."""
     decisions = decisions or {}
+    iteration_of = iteration_of or {}
     by_id = {ct.term.id: ct for ct in classified}
     final_ids = {r["id"] for r in final}
 
@@ -263,6 +279,7 @@ def _write_log(
     # ---- review outcomes ---------------------------------------------------
     review_tier = [ct for ct in classified if ct.tier in ("review", "no_match")]
     rev_accepted = rev_rejected = rev_overridden = 0
+    rejected_sample: list[str] = []
     for ct in review_tier:
         d = decisions.get(ct.term.id)
         if d is None:
@@ -272,8 +289,14 @@ def _write_log(
             proposed = ct.best.concept_id if ct.best else ""
             if d.chosen_id and d.chosen_id != proposed:
                 rev_overridden += 1
-        else:
+        elif d.rejected:
+            # Explicit reject token — a human ruled "no match exists". A blank
+            # accept is NOT a reject: it is undecided (still iterate-selectable).
             rev_rejected += 1
+            rejected_sample.append(
+                f"{ct.term.id} {ct.term.main_lang_term!r}"
+                + (f" — {d.notes}" if d.notes else "")
+            )
     rev_undecided = len(review_tier) - rev_accepted - rev_rejected
 
     # Non-standard accept markers (e.g. reviewer initials) across ALL decisions,
@@ -321,6 +344,7 @@ def _write_log(
         f"  auto_accept.mode           {profile.thresholds.auto_accept.mode}",
         f"  auto_accept.min_score      {profile.thresholds.auto_accept.min_score}",
         f"  auto_accept.min_score_gap  {profile.thresholds.auto_accept.min_score_gap}",
+        f"  auto_accept.demote_score_gap_to_review  {profile.thresholds.auto_accept.demote_score_gap_to_review}",
         f"  trusted_exact_match_langs  {profile.languages.trusted_exact_match_langs}",
         f"  trusted_target_pref_exact  {profile.languages.trusted_target_pref_exact}",
         f"  match_langs                {profile.languages.match_langs}",
@@ -354,9 +378,26 @@ def _write_log(
         f"  review/no_match terms      {len(review_tier)}",
         f"  accepted in review         {rev_accepted}",
         f"    with proposal overridden {rev_overridden} (reviewer chose a different concept)",
-        f"  rejected in review         {rev_rejected}",
-        f"  undecided (excluded)       {rev_undecided}",
+        f"  rejected in review         {rev_rejected} (explicit final no — excluded from re-runs)",
+        f"  undecided (excluded)       {rev_undecided} (eligible for iterate-select)",
     ]
+    if rejected_sample:
+        shown = rejected_sample[:20]
+        lines += ["  rejected terms" + (f" (first {len(shown)} of {len(rejected_sample)})" if len(rejected_sample) > len(shown) else "") + ":"]
+        lines += [f"    {t}" for t in shown]
+    if iteration_of:
+        # Iteration history: how many terms each pass contributed / resolved.
+        max_iter = max(iteration_of.values())
+        final_iter = Counter(r.get("iteration", 1) for r in final)
+        classified_iter = Counter(
+            iteration_of.get(ct.term.id, 1) for ct in classified
+        )
+        lines += ["", f"ITERATIONS ({max_iter} passes merged; last classification wins per term)"]
+        for i in range(1, max_iter + 1):
+            lines.append(
+                f"  iteration {i}: {classified_iter.get(i, 0)} terms classified, "
+                f"{final_iter.get(i, 0)} in final output"
+            )
     if marker_counts:
         lines += [
             "  accepted via non-standard marker (e.g. reviewer initials):",

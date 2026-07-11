@@ -41,6 +41,11 @@ class SourceTerm:
     # which candidate among preferred-hierarchy hits is proposed and annotates
     # reasons; never changes the gate, the tier, or a trusted exact pick.
     expected_hierarchy: str | None = None
+    # Reviewer notes carried FORWARD from a previous iteration's review CSV by
+    # `iterate-select` (e.g. "too broad — look under <X>"). Read-only context
+    # for the next pass: shown as `prior_notes` in the review CSV, never merged
+    # into the new decision's notes automatically.
+    prior_notes: str = ""
 
     @property
     def is_leaf(self) -> bool:
@@ -140,6 +145,12 @@ class Decision:
     chosen_target_term: str | None
     chosen_facet: str | None
     notes: str = ""
+    # Explicit human "no match exists, stop retrying" (accept token in
+    # KNOWN_REJECT_TOKENS). Distinct from accept=False with rejected=False,
+    # which means UNDECIDED: excluded from the final output like a reject, but
+    # still eligible for the next `iterate-select` pass. Three states total:
+    # accept / reject-final / undecided.
+    rejected: bool = False
     # The raw `accept` cell as read from the CSV, lowercased. Lets assemble tell
     # the machine's "auto" pre-fill (an auto-accepted row exported only for
     # visibility, left untouched) apart from an explicit human "yes" — so an

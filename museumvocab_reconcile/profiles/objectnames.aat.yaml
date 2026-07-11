@@ -44,6 +44,12 @@ thresholds:
     min_score: 20
     min_score_gap: 10
     trusted_lang_exact_match: true
+    # For ITERATION profiles (iterate-select re-runs with relaxed lookup
+    # settings): route score+gap promotions to review (match_type
+    # score_gap_demoted) instead of auto-accepting — a score gap under
+    # loosened thresholds is weaker evidence than in the first pass.
+    # Trusted nb/nn/source-en exact matches still auto-accept.
+    # demote_score_gap_to_review: true
   review_if:
     cross_facet_ambiguity: true
     broader_only: true

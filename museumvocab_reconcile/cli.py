@@ -438,31 +438,112 @@ def cmd_review_export(args):
 
 def cmd_assemble(args):
     profile = _load_profile(args.profile)
-    classified = [_dict_to_classified(d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
-    review_exists = bool(args.review and Path(args.review).exists())
-    decisions = ingest_review_csv(args.review, progress=print) if review_exists else {}
-    n_review_tier = sum(1 for ct in classified if ct.tier in ("review", "no_match"))
-    if n_review_tier and not review_exists:
-        print(
-            f"assemble: WARNING no review file at {args.review!r}; {n_review_tier} "
-            "review/no-match term(s) will be EXCLUDED (only auto-accepted terms are "
-            "kept). Run review-export, edit it, then re-run assemble."
+    # Repeatable --inp/--review pairs, one per iteration, in ITERATION ORDER.
+    # For a term id present in several classified inputs, the LATEST input's
+    # classification AND decision win together (an iteration-1 decision must
+    # never apply to an iteration-2 classification of the same term).
+    inps = args.inp or ["03_classified.json"]
+    reviews = args.review or ["03b_review.csv"]
+    if len(reviews) != len(inps):
+        raise SystemExit(
+            f"assemble: got {len(inps)} --inp but {len(reviews)} --review; "
+            "pass one --review per --inp, in the same (iteration) order."
         )
-    elif n_review_tier and not decisions:
+
+    merged_ct: dict[str, object] = {}          # id -> ClassifiedTerm (last wins)
+    merged_dec: dict[str, object] = {}         # id -> Decision from the winning layer
+    iteration_of: dict[str, int] = {}          # id -> iteration number (1-based)
+    run_info: dict[str, str] = {"profile": args.profile}
+    for n, (inp, review) in enumerate(zip(inps, reviews), 1):
+        classified = [_dict_to_classified(d) for d in json.loads(Path(inp).read_text("utf-8"))]
+        review_exists = bool(review and Path(review).exists())
+        decisions = ingest_review_csv(review, progress=print) if review_exists else {}
+        n_review_tier = sum(1 for ct in classified if ct.tier in ("review", "no_match"))
+        if n_review_tier and not review_exists:
+            print(
+                f"assemble: WARNING no review file at {review!r} (iteration {n}); "
+                f"{n_review_tier} review/no-match term(s) from it will be EXCLUDED "
+                "(only auto-accepted terms are kept). Run review-export, edit it, "
+                "then re-run assemble."
+            )
+        elif n_review_tier and not decisions:
+            print(
+                f"assemble: WARNING review file {review!r} (iteration {n}) yielded "
+                f"no decisions; {n_review_tier} review/no-match term(s) will be excluded."
+            )
+        for ct in classified:
+            tid = ct.term.id
+            merged_ct[tid] = ct
+            iteration_of[tid] = n
+            # Replace, don't accumulate: a stale iteration-(n-1) decision must
+            # not survive next to the iteration-n classification.
+            if tid in merged_dec:
+                del merged_dec[tid]
+            if tid in decisions:
+                merged_dec[tid] = decisions[tid]
+        label = f"iteration_{n}" if len(inps) > 1 else "classified"
+        run_info[label] = f"{inp} + {review if review_exists else '(no review file)'}"
+
+    classified_list = list(merged_ct.values())
+    if len(inps) > 1:
+        n_rerun = sum(1 for i in iteration_of.values() if i > 1)
         print(
-            f"assemble: WARNING review file {args.review!r} yielded no decisions; "
-            f"{n_review_tier} review/no-match term(s) will be excluded."
+            f"assemble: merged {len(inps)} iterations -> {len(classified_list)} "
+            f"terms ({n_rerun} re-classified in a later iteration; last wins)"
         )
     stats = assemble(
-        classified, decisions, profile, args.out, args.log, args.linkedart,
+        classified_list, merged_dec, profile, args.out, args.log, args.linkedart,
         out_csv=args.csv,
-        run_info={
-            "profile": args.profile,
-            "classified": args.inp,
-            "review_csv": args.review if review_exists else "(none)",
-        },
+        run_info=run_info,
+        iteration_of=iteration_of if len(inps) > 1 else None,
     )
     print(f"assemble: {stats} -> {args.out}")
+
+
+def cmd_iterate_select(args):
+    from .iterate import select_for_iteration
+
+    classified = [_dict_to_classified(d) for d in json.loads(Path(args.inp).read_text("utf-8"))]
+    if args.no_review:
+        decisions = {}
+    else:
+        if not Path(args.review).exists():
+            # Selecting without any decisions is legitimate (e.g. nothing was
+            # accepted yet), but must be a conscious choice — a mistyped path
+            # silently selecting EVERY review-tier term is the silent failure
+            # mode this guard exists to prevent.
+            raise SystemExit(
+                f"iterate-select: review file {args.review!r} not found. To "
+                "select without review decisions, pass --no-review explicitly."
+            )
+        decisions = ingest_review_csv(args.review, progress=print)
+    tiers = tuple(t.strip() for t in args.tier.split(",") if t.strip())
+    match_types = tuple(m.strip() for m in args.match_type.split(",") if m.strip())
+    ids = tuple(i.strip() for i in args.ids.split(",") if i.strip())
+    terms, manifest = select_for_iteration(
+        classified, decisions, tiers=tiers, match_types=match_types, ids=ids,
+    )
+    manifest["source_classified"] = args.inp
+    manifest["source_review"] = args.review if not args.no_review else "(none)"
+    Path(args.out).write_text(
+        json.dumps(terms, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    Path(args.manifest).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    sk = manifest["skipped_counts"]
+    print(
+        f"iterate-select: {manifest['selected']} of {manifest['input_terms']} "
+        f"terms selected -> {args.out}  (skipped: accepted={sk.get('accepted', 0)}, "
+        f"rejected={sk.get('rejected', 0)}, other={sk.get('tier_not_selected', 0) + sk.get('match_type_not_selected', 0)}); "
+        f"manifest -> {args.manifest}"
+    )
+    print(
+        "iterate-select: next, run lookup/classify[/deepen]/review-export on "
+        f"{args.out} with an ITERATION profile and FRESH output filenames "
+        "(lookup's resume skips terms already in its --out file), then assemble "
+        "with repeated --inp/--review pairs in iteration order."
+    )
 
 
 def cmd_export_resource(args):
@@ -715,15 +796,44 @@ def main(argv=None):
     s.set_defaults(func=cmd_review_export)
 
     s = stage(
+        "iterate-select",
+        "Select still-unresolved terms for a re-run with updated settings -> "
+        "a new 01-style prepared artifact + manifest. Offline.",
+        "Default selection: tier review/no_match AND undecided in the review CSV\n"
+        "(blank accept). Accepted terms and EXPLICIT rejects (accept = n/no/\n"
+        "false/0/reject/rejected) are never re-selected. Reviewer notes from the\n"
+        "CSV are carried into the subset as prior_notes (a read-only column in\n"
+        "the next review CSV). Writes a manifest documenting criteria and the\n"
+        "selected/skipped id sets.\n"
+        "Next: run lookup/classify[/deepen]/review-export on the subset with an\n"
+        "ITERATION profile (consider auto_accept.demote_score_gap_to_review:\n"
+        "true) and FRESH output filenames, then assemble with repeated\n"
+        "--inp/--review pairs.",
+    )
+    s.add_argument("--inp", default="03_classified.json", help="classified terms from classify/deepen (the iteration you are selecting FROM)")
+    s.add_argument("--review", default="03b_review.csv", help="edited review CSV holding the accept/reject decisions")
+    s.add_argument("--no-review", action="store_true", help="select without review decisions (explicit opt-in; a missing --review file otherwise aborts)")
+    s.add_argument("--out", default="iter_01_prepared.json", help="prepared-terms subset for the next iteration's lookup")
+    s.add_argument("--manifest", default="iter_manifest.json", help="selection manifest (criteria, selected/skipped ids)")
+    s.add_argument("--tier", default="review,no_match", help="comma list of tiers eligible for re-selection")
+    s.add_argument("--match-type", default="", help="optional comma list of match_type codes to narrow the selection (e.g. broader_only)")
+    s.add_argument("--ids", default="", help="explicit comma list of term ids to select (overrides --tier/--match-type; explicit rejects are still excluded)")
+    s.set_defaults(func=cmd_iterate_select)
+
+    s = stage(
         "assemble",
         "Merge tiers + review decisions into the final outputs. Offline.",
         "Writes 04_final.json, 04_final.csv (flattened, Excel-friendly),\n"
         "04_linkedart.json (slot-aware Linked Art fragments) and log.txt (run\n"
         "report: config used, tier/facet distributions, review outcomes).\n"
-        "Terms rejected or left undecided in review are excluded and counted.",
+        "Terms rejected or left undecided in review are excluded and counted.\n"
+        "ITERATIONS: repeat --inp/--review as pairs in iteration order (first\n"
+        "pass first); a term re-classified in a later iteration takes that\n"
+        "iteration's classification + decision, and every final record is\n"
+        "stamped with its `iteration` number.",
     )
-    s.add_argument("--inp", default="03_classified.json", help="classified terms from classify")
-    s.add_argument("--review", default="03b_review.csv", help="edited review CSV (warns if missing while review-tier terms exist)")
+    s.add_argument("--inp", action="append", default=None, help="classified terms artifact; repeat once per iteration, in order (default: 03_classified.json)")
+    s.add_argument("--review", action="append", default=None, help="edited review CSV paired with the --inp at the same position (default: 03b_review.csv; warns if missing while review-tier terms exist)")
     s.add_argument("--out", default="04_final.json", help="final vocabulary records")
     s.add_argument("--linkedart", default="04_linkedart.json", help="Linked Art fragments for the accepted matches")
     s.add_argument("--csv", default="04_final.csv", help="human-readable CSV of the final records")

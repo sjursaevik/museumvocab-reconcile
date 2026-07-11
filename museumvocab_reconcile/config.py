@@ -173,6 +173,13 @@ class AutoAcceptConfig:
     min_score: float = 25.0
     min_score_gap: float = 5.0
     trusted_lang_exact_match: bool = True
+    # Intended for ITERATION profiles (iterate-select re-runs with relaxed
+    # lookup settings): a score+gap auto-accept under relaxed thresholds is
+    # weaker evidence than the same signal in the first pass, so this flag
+    # demotes score_gap promotions to review (match_type "score_gap_demoted").
+    # Trusted nb/nn/source-en EXACT matches are unaffected — they are equally
+    # trustworthy at any settings.
+    demote_score_gap_to_review: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in VALID_AUTO_ACCEPT_MODES:

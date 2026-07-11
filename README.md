@@ -58,8 +58,11 @@ lookup          prepared terms       -> 02_candidates.json     (needs network)
 classify        candidates           -> 03_classified.json
  ├ (optional deepen step, below)     -> 03c_deepened.json      (network + LLM)
 review-export   classified terms     -> 03b_review.csv         (edit by hand)
+ ├ (optional iteration loop, below)  -> iter2/01_prepared.json  (re-run the
+ │                                      unresolved subset with new settings)
 assemble        classified + review  -> 04_final.json, 04_final.csv,
-                                        04_linkedart.json, log.txt
+                (one pair per           04_linkedart.json, log.txt
+                 iteration)
 export-resource final records        -> 05_resource.json        (optional; a
                                         MongoDB `resources` lookup document for
                                         the LinkedArtConversion trigger)
@@ -188,16 +191,33 @@ Edit only these columns, then save as CSV:
 
 | column | what to put |
 |---|---|
-| `accept` | `yes` to keep the match, `no`/blank to drop the term |
+| `accept` | `yes` to keep the match; `no` to reject it **for good**; blank = undecided |
 | `chosen_id` | a different authority id, if you're overriding the proposal |
 | `chosen_target_term` | a corrected English/target label, if needed |
 | `chosen_facet` | a corrected facet, if needed |
-| `notes` | free text, carried into the output |
+| `notes` | free text, carried into the output (and forward into the next iteration as `prior_notes`) |
 
-A term with `accept` blank or `no` is **excluded** from the final output. On
-auto-accepted rows the `accept` cell is pre-filled `auto`; leaving it untouched
-keeps the machine's decision, and the term stays counted as auto-accepted (only
-an actual edit makes it a human review).
+The `accept` column carries **three states**:
+
+* **accept** — any non-empty value outside the reject tokens (`yes`, `y`,
+  reviewer initials, …). The term is kept.
+* **reject** — `n`, `no`, `false`, `0`, `reject`, or `rejected`: an explicit,
+  final "no authority match exists". Excluded from the output **and** from
+  `iterate-select` re-runs, and listed in `log.txt` so the judgement itself is
+  documented.
+* **blank** — undecided. Excluded from the output like a reject, but still
+  eligible for the next `iterate-select` pass.
+
+> **Behaviour change:** these reject tokens previously counted as *accepts*
+> (any non-empty cell did). If a reviewer used `no` as an initials-style accept
+> marker in an old CSV, change it before re-assembling; `assemble` prints a
+> loud note whenever reject tokens are ingested.
+
+On auto-accepted rows the `accept` cell is pre-filled `auto`; leaving it
+untouched keeps the machine's decision, and the term stays counted as
+auto-accepted (only an actual edit makes it a human review). A `prior_notes`
+column (read-only) appears on iteration re-runs with the reviewer's notes from
+the previous pass.
 
 If you edit in Excel, save as **CSV UTF-8** — the file is read tolerantly
 (UTF-8/BOM, Windows-1252, and `;` or `,` delimiters all work), but saving as
@@ -211,7 +231,10 @@ review, and writes:
 * **`04_final.json`** — one record per kept term. Alongside the source term and
   the chosen authority id/link/facet, each record carries provenance:
   `decision_source` (`auto_accept` | `human_review`), `match_type` (why it was
-  tiered — e.g. `nb_exact`, `score_gap`), `matched_lang`, `translation_source`
+  tiered — e.g. `nb_exact`, `score_gap`), `iteration` (which pipeline pass the
+  record was resolved in; `1` unless the iteration loop below was used —
+  `decision_source=auto_accept, iteration=2` is auditable as "accepted only
+  under the iteration-2 settings"), `matched_lang`, `translation_source`
   (`source_data` | `llm` | `human`), and `recommended_translation` /
   `recommended_authority` flags marking values worth writing back to MuseumPlus.
   It also carries hierarchy on both sides: `source_level` (the term's depth in
@@ -228,13 +251,69 @@ review, and writes:
   event) from the profile's facet → property map.
 * **`log.txt`** — a run report: the decision-relevant config used, tier and
   auto-accept-basis distributions, the matched-language breakdown of the final
-  records, review outcomes (accepted / rejected / undecided, and how often a
-  reviewer overrode the proposal), translation provenance, and the no-match
-  terms.
+  records, review outcomes (accepted / explicitly rejected — with the rejected
+  terms listed, so the judgement is documented / undecided, and how often a
+  reviewer overrode the proposal), an iteration history when multiple passes
+  were assembled, translation provenance, and the no-match terms.
 
 > If review/no-match terms exist but no edited `03b_review.csv` is present,
 > `assemble` warns and keeps only the auto-accepted terms — run `review-export`,
 > edit it, then re-run.
+
+## Optional: the iteration loop (re-run unresolved terms with new settings)
+
+After a review pass, some terms are typically still unresolved: undecided in
+the CSV, or `no_match`. `iterate-select` extracts that subset as a fresh
+01-style prepared artifact so the normal stages can be re-run on just those
+terms — usually with an **iteration profile**: a copy of your profile (the
+`…iter2.yaml` below is one you create, not a shipped file) with relaxed lookup
+settings (wider `result_limit`, lower `min_candidate_score`, …) and
+`auto_accept.demote_score_gap_to_review: true`:
+
+```powershell
+# 1. select the unresolved subset (+ a manifest documenting the selection)
+python -m museumvocab_reconcile --profile profiles\objectnames.aat.yaml `
+  iterate-select --inp 03_classified.json --review 03b_review.csv `
+  --out iter2\01_prepared.json --manifest iter2\manifest.json
+
+# 2. re-run the normal stages on it, with an ITERATION profile and FRESH
+#    output filenames (lookup's resume skips terms already in its --out file,
+#    so writing into the old 02_candidates.json would silently do nothing)
+python -m museumvocab_reconcile --profile profiles\objectnames.aat.iter2.yaml `
+  lookup --inp iter2\01_prepared.json --out iter2\02_candidates.json --cache cache.json
+python -m museumvocab_reconcile --profile profiles\objectnames.aat.iter2.yaml `
+  classify --inp iter2\02_candidates.json --out iter2\03_classified.json
+python -m museumvocab_reconcile --profile profiles\objectnames.aat.iter2.yaml `
+  review-export --inp iter2\03_classified.json --out iter2\03b_review.csv
+
+# 3. review iter2\03b_review.csv (a read-only prior_notes column carries your
+#    notes from the previous pass), then assemble ALL iterations together:
+python -m museumvocab_reconcile --profile profiles\objectnames.aat.yaml `
+  assemble --inp 03_classified.json --review 03b_review.csv `
+           --inp iter2\03_classified.json --review iter2\03b_review.csv
+```
+
+Rules the loop follows:
+
+* **Selection** defaults to tier `review`/`no_match` **and** undecided in the
+  review CSV. Accepted terms and explicit rejects are never re-selected (a
+  reject is a human's final "no match exists"; `--ids` can force specific terms
+  but still skips rejects, reported in the manifest). Narrow further with
+  `--match-type` (e.g. `broader_only`) or `--tier`.
+* **Merging**: `assemble` takes one `--inp`/`--review` pair per iteration, in
+  order. A term re-classified in a later iteration takes that iteration's
+  classification **and** decision together — an iteration-1 accept never
+  applies to an iteration-2 candidate set the reviewer hasn't seen.
+* **Provenance**: every final record carries `iteration`; the manifest records
+  the criteria and selected/skipped ids; `log.txt` gains an ITERATIONS section
+  (terms classified / resolved per pass) so the convergence story is documented.
+* **Trust under relaxed settings**: set `auto_accept.demote_score_gap_to_review:
+  true` in the iteration profile. Score+gap promotions then land in review with
+  `match_type: score_gap_demoted` — a score gap under loosened thresholds is
+  weaker evidence than in the first pass. Trusted `nb`/`nn`/source-English
+  exact matches still auto-accept; those signals don't weaken with settings.
+* **Cache**: keep sharing the same `cache.json`; concept fetches are id-keyed
+  and changed settings simply produce new query keys.
 
 ## Optional: machine-recommended English (the translate steps)
 

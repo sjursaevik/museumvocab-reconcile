@@ -25,6 +25,16 @@ from .model import ClassifiedTerm, Decision
 # flagged, since it may equally be a typo — see ingest_review_csv.
 KNOWN_ACCEPT_TOKENS = {"y", "yes", "true", "1", "auto", "accept"}
 
+# Tokens that mean an explicit, FINAL reject: "I checked — no authority match
+# exists for this term; stop offering it for re-runs." Distinct from leaving
+# `accept` blank, which means undecided (excluded from output but still
+# selectable by `iterate-select` for another pass with new settings).
+#
+# BEHAVIOUR CHANGE (documented in the README): before iteration support was
+# added, ANY non-empty `accept` value — including "no" — counted as an accept
+# (with a non-standard-marker warning). These tokens now count as rejects.
+KNOWN_REJECT_TOKENS = {"n", "no", "false", "0", "reject", "rejected"}
+
 # Column order is tuned for the human reviewer working left-to-right in a
 # spreadsheet; it carries no logic. Both writer (DictWriter) and reader
 # (DictReader) key by name, so this list may be reordered freely without
@@ -39,6 +49,9 @@ COLUMNS = [
     "tier", "match_type",               # machine verdict + why
     # ---- editable by the reviewer (accept is the primary write target) -----
     "accept", "chosen_id", "chosen_target_term", "chosen_facet", "notes",
+    # read-only: the reviewer's notes from the PREVIOUS iteration (set by
+    # iterate-select); blank on a first-pass export
+    "prior_notes",
     "reasons",                          # runner-up alts, beside the edit zone for overrides
     # ---- deeper context: scroll right only when digging / overriding ------
     "parents",
@@ -125,6 +138,7 @@ def export_review_csv(
                     "chosen_target_term": ct.proposed_target_term or "",
                     "chosen_facet": ct.proposed_facet or "",
                     "notes": "",
+                    "prior_notes": ct.term.prior_notes or "",
                 }
             )
     return len(rows)
@@ -157,14 +171,20 @@ def ingest_review_csv(
 ) -> dict[str, Decision]:
     """Read reviewer decisions back from the review CSV.
 
-    Any NON-EMPTY value in `accept` counts as an accept — not just the known
-    tokens (y/yes/true/1/auto/accept). This lets multiple reviewers write
-    their initials in `accept` as a lightweight "who accepted this" signal
-    (kept verbatim in Decision.raw_accept). Tokens outside the known set are
-    still flagged via `progress`, since a non-standard token is equally
-    consistent with a typo — silently dropping ~1000+ rows because of one
-    unrecognized token is exactly the kind of silent failure this project
-    treats as a bug, so we warn instead of guessing.
+    The `accept` column carries THREE states:
+
+    * a KNOWN_REJECT_TOKENS value (n/no/false/0/reject/rejected) — explicit
+      FINAL reject: excluded from output AND from iterate-select re-runs;
+    * blank — undecided: excluded from output but eligible for the next
+      iterate-select pass;
+    * any other non-empty value — accept. Not just the known tokens
+      (y/yes/true/1/auto/accept): multiple reviewers may write their initials
+      in `accept` as a lightweight "who accepted this" signal (kept verbatim
+      in Decision.raw_accept). Tokens outside both known sets are still
+      flagged via `progress`, since a non-standard token is equally
+      consistent with a typo — silently dropping ~1000+ rows because of one
+      unrecognized token is exactly the kind of silent failure this project
+      treats as a bug, so we warn instead of guessing.
     """
     text = _read_csv_text(path)
     lines = text.splitlines()
@@ -174,6 +194,7 @@ def ingest_review_csv(
 
     decisions: dict[str, Decision] = {}
     nonstandard_markers: Counter[str] = Counter()
+    n_rejected = 0
     reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
     if reader.fieldnames is None or "id" not in [(f or "").strip() for f in reader.fieldnames]:
         raise ValueError(
@@ -188,12 +209,16 @@ def ingest_review_csv(
         if not rid:
             continue
         accept_raw = (row.get("accept") or "").strip().lower()
-        accept = bool(accept_raw)
+        rejected = accept_raw in KNOWN_REJECT_TOKENS
+        accept = bool(accept_raw) and not rejected
+        if rejected:
+            n_rejected += 1
         if accept and accept_raw not in KNOWN_ACCEPT_TOKENS:
             nonstandard_markers[accept_raw] += 1
         decisions[rid] = Decision(
             id=rid,
             accept=accept,
+            rejected=rejected,
             chosen_id=(row.get("chosen_id") or "").strip() or None,
             chosen_target_term=(row.get("chosen_target_term") or "").strip() or None,
             chosen_facet=(row.get("chosen_facet") or "").strip() or None,
@@ -209,5 +234,13 @@ def ingest_review_csv(
             f"ingest_review_csv: {total} row(s) accepted via non-standard "
             f"'accept' marker(s) — treated as accept (e.g. reviewer initials), "
             f"but verify these are intentional: {breakdown}"
+        )
+    if progress and n_rejected:
+        progress(
+            f"ingest_review_csv: {n_rejected} row(s) explicitly REJECTED "
+            f"(accept in {sorted(KNOWN_REJECT_TOKENS)}) — excluded from the "
+            f"final output and from iterate-select re-runs. NOTE: these tokens "
+            f"used to count as accepts; if any 'no' here meant reviewer "
+            f"initials rather than a reject, change it."
         )
     return decisions
